@@ -1,0 +1,51 @@
+{
+  "_comment": "Fallback only — Indus3D auto-reads printer.cfg from Moonraker on startup.",
+  "printer_name": "Indus3D Dev Rig",
+  "kinematics": "cartesian",
+  "bed": {
+    "size_x_mm": 300,
+    "size_y_mm": 300,
+    "size_z_mm": 400,
+    "origin_center": false
+  },
+  "motion": {
+    "max_velocity_mm_s": 300,
+    "max_accel_mm_s2": 3000,
+    "steps_per_mm_x": 80,
+    "steps_per_mm_y": 80,
+    "steps_per_mm_z": 400,
+    "steps_per_mm_e": 415
+  },
+  "hotend": {
+    "nozzle_diameter_mm": 0.4,
+    "filament_diameter_mm": 1.75,
+    "max_temp_c": 300,
+    "pid_kp": 21.0,
+    "pid_ki": 1.08,
+    "pid_kd": 100.0
+  },
+  "bed_heater": {
+    "max_temp_c": 120,
+    "pid_kp": 40.0,
+    "pid_ki": 4.0,
+    "pid_kd": 100.0
+  },
+  "print": {
+    "layer_height_mm": 0.2,
+    "line_width_mm": 0.4,
+    "linear_advance_k": 0.04,
+    "max_volumetric_flow_mm3_s": 12.0
+  },
+  "moonraker": {
+    "ip": "100.88.38.105",
+    "port": 7125
+  },
+  "alerts": {
+    "lag_magnitude_warn_mm": 0.8,
+    "stress_score_warn": 0.5,
+    "ext_heat_cycles_warn": 500,
+    "bed_heat_cycles_warn": 500,
+    "thermal_runaway_delta_c": 15.0,
+    "thermal_runaway_window_s": 5.0
+  }
+}

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+indus_env/
+venv/
+.venv/
+db/flight_record.db
+Training/db/flight_record.db
+Training/yolov8n.pt
+Training/*.pt
+Training/dataset/raw_images/*.jpg
+Training/dataset/raw_images/*.png
+.DS_Store
+.vscode/
