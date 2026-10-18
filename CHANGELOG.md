@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - Production Release
+
+### Added
+- Complete architecture documentation and system flowcharts in `README.md`.
+- Community contribution guidelines (`CONTRIBUTING.md`), Code of Conduct (`CODE_OF_CONDUCT.md`), and Security Policy (`SECURITY.md`).
+- Project development roadmap (`docs/ROADMAP.md`).
+- GitHub issue and pull request templates (`.github/`).
+- Formal MIT License.
+
 ## [2.0.0-phase7] - React 18 Modular Frontend, Bento Dashboard & Touch UI
 
 ### Added

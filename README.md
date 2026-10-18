@@ -1,21 +1,68 @@
-# Indus3D: Real-Time Digital Twin & Closed-Loop Quality Controller
+# Indus3D: Real-Time Digital Twin & Closed-Loop Quality Controller for 3D Printers
 
-Indus3D is a next-generation real-time digital twin and closed-loop quality control platform for Klipper and Moonraker 3D printers.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![React 18](https://img.shields.io/badge/Frontend-React_18-61DAFB.svg?logo=react&logoColor=black)](https://react.dev/)
+[![Three.js](https://img.shields.io/badge/3D-Three.js-000000.svg?logo=three.js&logoColor=white)](https://threejs.org/)
+[![Rust DSP](https://img.shields.io/badge/DSP-Rust-DEA584.svg?logo=rust&logoColor=white)](backend/dsp/)
+[![Klipper](https://img.shields.io/badge/Firmware-Klipper-red.svg)](https://www.klipper3d.org/)
 
-> **Release Phase 7**: React 18 Modular Frontend, Bento Dashboard & Touch UI
+Indus3D is an open-source, real-time digital twin and closed-loop quality control platform for Klipper and Moonraker 3D printers. It continuously monitors physical toolhead kinematics, extrusion dynamics, thermal dissipation, and structural vibrations at 10 Hz, executing intelligent real-time corrective actions (M220 speed scaling, M221 flow compensation, dynamic Pressure Advance, adaptive cooling, and thermal Z-offset leveling) to prevent print failures and optimize part quality.
 
 ---
 
-## 🌟 Architecture Overview (Phase 1)
+## 🌟 Key Features
 
-This foundation release establishes the core repository infrastructure, unified settings management, database schema migrations, and deployment automation:
+### 1. Real-Time Physics-Based Digital Twin
+- **Kinematic Model**: Tracks commanded vs. live physical toolhead position, finite-difference velocity, acceleration, and belt stress reversal dynamics.
+- **Thermal Model**: First-order thermal lag observer predicting true nozzle melt-zone temperature and early-warning thermal runaway detection.
+- **Extrusion Dynamics**: Calculates instantaneous volumetric flow ($mm^3/s$), bead cross-sectional area (stadium/pill model), and under/over-extrusion ratios.
+- **Vibration & Resonance Monitor**: Integrates with accelerometer/DSP streams to track structural vibration frequencies and dynamically adjust input shaping.
 
-- **Unified Configuration**: Centralized settings via `backend/config/settings.py` parsing environment variables with robust defaults.
-- **Database Migrations Engine**: Built-in lightweight SQLite migration engine (`backend/db/migrator.py`) with versioned migrations (`001_baseline.py` through `009_config_history.py`).
-- **Telemetry & Print Flight Records**: Structured SQLite flight logging schemas in `backend/db/models.py`.
-- **Rotating File Logging**: Thread-safe rotating logging in `backend/core/logger.py` writing to `logs/indus3d.log`.
-- **Worker Management**: Multi-threaded worker coordinator in `backend/workers/manager.py`.
-- **Pruned Legacy Code**: Removed deprecated command queue and asynchronous IPC modules in favor of direct Moonraker communication.
+### 2. Autopilot Closed-Loop Quality Controller
+- **Adaptive Flow Control (`M221`)**: Detects extrusion variations in real time and trims flow rate within safe physical bounds (85%–115%).
+- **Speed-Lag Compensation (`M220`)**: Automatically throttles print speed when positional lag exceeds mechanical compliance thresholds, smoothly recovering when lag clears.
+- **Dynamic Pressure Advance**: Adapts Klipper's `SET_PRESSURE_ADVANCE` on the fly based on volumetric flow rate and shear-thinning polymer rheology.
+- **Thermal Z-Offset Expansion Compensation**: Compensates for vertical frame thermal growth and layer height errors with anti-windup safety bounds.
+- **Predictive Clog Detection**: Halts or pauses before catastrophic grinding occurs if melt pressure exceeds motor torque limits.
+
+### 3. Bed Adaptation & Collision Safety Engine
+- **OrcaSlicer / PrusaSlicer / BambuStudio Profile Import**: Directly parses `printable_area`, `printable_height`, and `bed_exclude_area` (bed leveling screws, clips, wipe towers, purge buckets) from `.json` slicer profiles.
+- **Custom 3D Bed Models (STL)**: Upload, render, and inspect custom physical build plate geometries in Three.js with realistic metal/texture shading.
+- **Collision Guardrails**: Forbids downward Z corrections near or over bed screws and clips below clearance altitude ($Z < 10\text{ mm}$). Clamps total Z adjustments strictly within `[-0.25mm, +0.50mm]`.
+
+### 4. Modern Dashboard & Visualizer
+- **Interactive 3D Viewport**: WebGL/Three.js digital twin rendering live nozzle coordinates, extruder path contours, and physical exclusion zones.
+- **Full Klipper Controls**: Mainsail-style toolhead jogging, temperature gauges, extrusion controls, emergency stop, and interactive G-code terminal with live `[QC]` feedback tagging.
+- **Touch UI Mode**: Tailored for 5" and 7" Raspberry Pi touchscreen displays.
+- **Sensor Telemetry**: PZEM-004T AC power metering, Spoolman active spool tracking, and multi-channel webhook notifications (Discord/Telegram).
+
+---
+
+## 🏗️ Architecture
+
+```
+┌────────────────────────────────────────────────────────┐
+│                   Frontend (React + Vite)              │
+│       Three.js Viewport • Dashboard Grid • Touch UI    │
+└───────────────────────────▲────────────────────────────┘
+                            │ WebSocket (10 Hz) / REST
+┌───────────────────────────▼────────────────────────────┐
+│                    Flask API Gateway                   │
+│   Auth Gate • Rate Limiting • Bed Safety • G-Code Proxy│
+└─────────────┬───────────────────────────┬──────────────┘
+              │                           │
+┌─────────────▼──────────────┐ ┌──────────▼──────────────┐
+│  Digital Twin Engine (10Hz)│ │  Moonraker HTTP / WS    │
+│  Kinematics • Thermals     │ │  /printer/objects/query │
+│  Extrusion  • Quality Ctrl │ │  /printer/gcode/script  │
+└─────────────┬──────────────┘ └──────────┬──────────────┘
+              │                           │
+┌─────────────▼──────────────┐            │
+│  DSP Pipeline (UDP / Rust) │            │
+│  ADXL345 Vibration Streams │            ▼
+└────────────────────────────┘    Klipper Firmware (MCU)
+```
 
 ---
 
@@ -23,6 +70,7 @@ This foundation release establishes the core repository infrastructure, unified 
 
 ### Prerequisites
 - Python 3.9 or higher
+- Node.js 18 or higher & npm
 - Klipper & Moonraker (for physical printer connection)
 
 ### Automated Install (Raspberry Pi / Linux)
@@ -32,224 +80,54 @@ cd indus3d
 ./install.sh
 ```
 
-### Manual Backend Setup
+### Manual Setup
+
+#### 1. Backend Setup
 ```bash
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-### Applying Database Migrations
-To initialize or upgrade the SQLite flight record database:
-```bash
-cd backend
 python -m db.migrator
 ```
 
----
-
-## 🔐 Security & Access Control (Phase 2)
-
-Indus3D provides security middleware to protect the printer control plane against unauthorized network access and abusive request flooding:
-
-### 1. Token-Based Session Authentication (`api/auth.py`)
-- Set `INDUS3D_PASSWORD` in `backend/.env` to require authentication.
-- When configured, clients must exchange the password for a session token via `POST /api/v1/auth/login`.
-- Authenticated requests must pass the header:
-  ```http
-  Authorization: Bearer <session_token>
-  ```
-- Secure constant-time token comparison prevents timing attacks. If `INDUS3D_PASSWORD` is omitted, the server operates in open local development mode.
-
-### 2. Sliding-Window Rate Limiting (`api/rate_limiter.py`)
-- **Login Throttling**: Limits authentication attempts to 5 per 60 seconds per IP to prevent brute-force attacks.
-- **Hardware G-Code Throttling**: Restricts critical motion and temperature commands to 30 requests per minute per IP.
-- **Automatic IP Ban**: Clients exceeding rate limits repeatedly receive a 15-minute temporary ban (`HTTP 429 Too Many Requests`).
-
-### 3. Running Security Tests
+Run in **Simulation Mode** (no printer hardware required):
 ```bash
-pytest backend/tests/test_auth.py -v
+python main.py --sim --shape benchy --layers 40
 ```
 
----
-
-## 📡 Extended Telemetry, Power & Alert Integrations (Phase 3)
-
-Indus3D monitors workshop environment and electrical power parameters beyond standard Klipper thermals:
-
-### 1. PZEM-004T AC Power Monitoring (`services/pzem_monitor.py`)
-- Real-time voltage (V), current (A), active power (W), frequency (Hz), power factor (PF), and cumulative energy consumption (kWh) over Modbus RTU.
-- Configurable serial port (`PZEM_PORT=/dev/ttyUSB0`) and baudrate (`PZEM_BAUD=9600`).
-
-### 2. Spoolman Filament Integration (`services/spoolman_client.py`)
-- Direct API integration with Spoolman server for active filament tracking, material spool weights, and remaining filament length warnings.
-
-### 3. Flash Storage & Wear Monitor (`services/disk_monitor.py`)
-- Tracks Raspberry Pi eMMC / SD card storage utilization and alerts when disk free space drops below critical thresholds.
-
-### 4. Automated Print Timelapses (`core/timelapse.py`)
-- High-resolution frame capture synchronized on layer change (`G-code Z-hop` or `M240`).
-- Automated video rendering via `ffmpeg` on print completion.
-
-### 5. Multi-Channel Webhook Notifications (`core/notifications.py`, `core/alert_actions.py`)
-- Real-time print alerts and critical fault warnings dispatched to:
-  - **Discord**: Rich embeds with print progress and sensor stats.
-  - **Telegram**: Instant mobile push alerts with photo attachments.
-  - **Pushover**: High-priority alert tones for thermal faults.
-
-### 6. Running Telemetry & Alert Tests
+Run in **Live Mode** (connected to Klipper via Moonraker):
 ```bash
-pytest backend/tests/test_alert_actions.py -v
+python main.py
 ```
 
----
-
-## 🦀 High-Speed Vibration DSP & Resonance Tuning (Phase 4)
-
-Indus3D includes an ultra-low-latency accelerometer signal processing pipeline written in Rust and integrated with Python:
-
-```
-┌─────────────────────┐      UDP Stream      ┌─────────────────────┐
-│  ADXL345 / LIS2DW   │ ───────────────────► │  Rust DSP Pipeline  │
-│  Accelerometer Data │      (1600 Hz)       │  (backend/dsp/)     │
-└─────────────────────┘                      └──────────┬──────────┘
-                                                        │ UDP Metrics
-                                                        ▼ (FFT/RMS/PSD)
-┌─────────────────────┐  Harmonic Tracking   ┌─────────────────────┐
-│ Klipper Shaper Tune │ ◄─────────────────── │  Python DSP Bridge  │
-│ (core/shaper_tuner) │                      │ (dsp_bridge.py)     │
-└─────────────────────┘                      └─────────────────────┘
-```
-
-### 1. Rust DSP Accelerometer Pipeline (`backend/dsp/`)
-- Computes real-time Fast Fourier Transforms (FFT), Power Spectral Density (PSD), RMS acceleration, and dominant resonance peaks at up to 3200 Hz.
-- Emits compact binary vibration metrics over local UDP socket.
-
-### 2. Building the Rust DSP Pipeline
-```bash
-cd backend/dsp
-cargo build --release
-```
-The compiled binary runs automatically as a managed child process under `backend/workers/dsp_bridge.py`.
-
-### 3. Vibration Monitor & Input Shaper Tuner (`core/shaper_tuner.py`)
-- **Vibration Monitor**: Tracks mechanical harmonics, belt looseness, and frame resonance shifts during printing.
-- **Input Shaper Tuner**: Recommends optimal Klipper shaper algorithms (`zv`, `mzv`, `ei`, `2hump_ei`) and shaper damping ratios based on measured frequency response.
-
----
-
-## 🧠 Physics-Based Digital Twin & Closed-Loop Autopilot (Phase 5)
-
-Indus3D runs a multi-physics mathematical digital twin that predicts print conditions in real time and applies closed-loop G-code interventions:
-
-### 1. Mathematical Physics Models (`digital_twin/control_models.py`)
-- **Kinematic Positional Lag**: Tracks instantaneous deviation between commanded G-code waypoints and live physical stepper positions, calculating finite-difference velocity and acceleration.
-- **Thermal Lag Observer**: First-order lumped thermal resistance model predicting core melt-zone temperature vs heater block temperature.
-- **Extrusion Dynamics**: Computes true volumetric flow rate ($Q = v \cdot w \cdot h\text{ mm}^3/s$) and stadium bead geometry to detect under/over-extrusion before surface defects form.
-- **Stepper Motor & Acoustic Models**: Calculates electromagnetic motor torque ($\tau$) and estimates side-channel sound pressure level ($dB$) to detect belt slippage and mechanical binding.
-- **Polymer Rheology Profiles**: Non-Newtonian shear-thinning and thermal properties for PLA, PETG, ABS, and TPU (`digital_twin/filament_profiles.py`).
-
-### 2. Autopilot Quality Controller (`digital_twin/quality_controller.py`)
-When Autopilot is enabled, Indus3D emits real-time closed-loop compensations via Moonraker:
-- **Adaptive Flow (`M221`)**: Trims extrusion multiplier (85%–115%) to maintain uniform bead cross-section.
-- **Speed Lag Throttle (`M220`)**: Scales print speed down during high-acceleration moves or mechanical resistance, recovering smoothly once lag clears.
-- **Dynamic Pressure Advance**: Continuously adjusts `SET_PRESSURE_ADVANCE` based on instantaneous volumetric flow rate.
-- **Anti-Windup Temperature Clamp**: Clamps dynamic temperature trims strictly within $\pm 2\text{ °C}$ (maximum $+12\text{ °C}$ over base temperature) to eliminate thermal runaway hazards.
-
-### 3. QA Audit Reporter & Digital Twin Simulator
-- **QA Reporter (`services/qa_reporter.py`)**: Automatically compiles print telemetry into structured PDF/JSON quality assurance certificates.
-- **Simulator Mode**: Run standalone physics simulations with baked 3DBenchy geometry:
-  ```bash
-  python main.py --sim --shape benchy --layers 40
-  ```
-
-### 4. Running Physics & Quality Tests
-```bash
-pytest backend/tests/test_quality_controller.py backend/tests/test_extrusion_model.py backend/tests/test_thermal_model.py -v
-```
-
----
-
-## 🛡️ Bed Adaptation, Slicer Integration & REST API (Phase 6)
-
-Indus3D features an intelligent bed safety engine to prevent toolhead collisions with bed hardware and provides a comprehensive REST & WebSocket API:
-
-### 1. Bed Safety & Slicer Profile Import (`api/routes/bed.py`)
-- **Direct OrcaSlicer / PrusaSlicer Import**: Parses printer `.json` configuration files, extracting `printable_area` vertices, `bed_origin`, and `bed_exclude_area` polygons.
-- **Hardware Exclusion Zones**: Define keep-out zones for bed leveling screws, glass clips, wipe buckets, and purge lines.
-- **Custom 3D Bed Meshes**: Upload and serve custom STL build plates (`/api/v1/bed/stl`) for accurate 3D visualization.
-- **Collision Guardrails**: Prohibits toolhead downward movement over exclusion zones below clearance altitude ($Z < 10\text{ mm}$), clamping dynamic leveling offsets within `[-0.25mm, +0.50mm]`.
-
-### 2. REST API & WebSocket Reference
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/v1/printer/status` | Current printer status, temperatures, position, and job state |
-| `POST` | `/api/v1/printer/gcode` | Execute G-code command (rate-limited and sanitized) |
-| `POST` | `/api/v1/printer/emergency_stop` | Trigger immediate Klipper `M112` emergency stop |
-| `GET` | `/api/v1/bed/profile` | Current bed dimensions, origin, and exclusion zones |
-| `POST` | `/api/v1/bed/import-orca` | Import OrcaSlicer/PrusaSlicer JSON profile |
-| `POST` | `/api/v1/bed/exclusion-zones` | Add or update hardware exclusion zones |
-| `GET` | `/api/v1/twin/status` | Live digital twin metrics (flow, lag, thermal, vibration) |
-| `POST` | `/api/v1/twin/autopilot/toggle` | Enable or disable closed-loop Autopilot controller |
-| `GET` | `/api/v1/spools/active` | Active filament spool information from Spoolman |
-| `WS` | `/ws/twin` | 10 Hz real-time binary/JSON telemetry broadcast |
-
-### 3. Running Bed Safety Tests
-```bash
-pytest backend/tests/test_bed_safety.py -v
-```
-
----
-
-## 🖥️ Modern React 18 Frontend & Touch UI (Phase 7)
-
-Indus3D provides a modern, responsive web dashboard built with React 18, Vite, Three.js, and Tailwind CSS:
-
-### 1. Modular Bento Dashboard (`DashboardGrid.jsx`)
-- Responsive card grid layout with dynamic reordering across desktop, tablet, and mobile displays.
-- Real-time gauge panels for volumetric flow, temperature lag, vibration spectrum, and toolhead position.
-
-### 2. Dedicated 7-inch Touch UI (`TouchUI.jsx`, `TouchNavbar.jsx`)
-- High-contrast, large-touch-target interface designed specifically for 5" and 7" Raspberry Pi Klipper touchscreens.
-- Quick-access controls for axis jogging, baby-stepping, temperature presets, and emergency stop.
-
-### 3. Three.js 3D Viewport (`Viewport.jsx`, `PrintBed.jsx`)
-- Interactive WebGL digital twin rendering the physical build plate, uploaded STL bed models, toolhead position, and exclusion zones.
-- Real-time layer-stepping G-code path visualizer (`GCodeVisualizerV2.jsx`).
-
-### 4. Slicer Import & Calibration Modals
-- **Bed Settings Modal (`BedSettingsModal.jsx`)**: Drag-and-drop OrcaSlicer profile import with real-time exclusion zone editor.
-- **Shaper Tuner & Calibration Wizard (`ShaperTuner.jsx`, `CalibrationWizard.jsx`)**: Visual input shaper resonance graphs and PID auto-tuning.
-
-### 5. Frontend Setup & Build
+#### 2. Frontend Setup
 ```bash
 cd frontend
 npm install
-
-# Start development server with hot-reload (http://localhost:5173)
 npm run dev
-
-# Build optimized production bundle
-npm run build
 ```
+Open your browser at `http://localhost:5173`.
 
 ---
 
 ## ⚙️ Configuration
 
+### Environment Variables (`backend/.env`)
 Copy `backend/.env.example` to `backend/.env`:
 ```ini
 MOONRAKER_HOST=127.0.0.1
 MOONRAKER_PORT=7125
 FLASK_HOST=0.0.0.0
 FLASK_PORT=5001
-TWIN_TICK_HZ=10
+INDUS3D_PASSWORD=            # Optional session password
+TWIN_TICK_HZ=10              # Telemetry frequency
+PZEM_PORT=/dev/ttyUSB0       # Optional PZEM power monitor
+SPOOLMAN_URL=                # Optional Spoolman URL
 ```
 
-### Klipper Integration
-Include the Indus3D configuration overrides in your `printer.cfg`:
+### Klipper Integration (`indus3d.cfg`)
+Include Indus3D overrides in your Klipper `printer.cfg`:
 ```ini
 [include indus3d.cfg]
 ```
@@ -258,7 +136,8 @@ Include the Indus3D configuration overrides in your `printer.cfg`:
 
 ## 🧪 Testing
 
-Run backend tests using pytest:
+Indus3D includes a test suite covering bed safety geometry, extrusion dynamics, thermal runaway detection, and quality control logic:
+
 ```bash
 cd backend
 source .venv/bin/activate
@@ -267,6 +146,12 @@ pytest tests/ -v
 
 ---
 
+## 🤝 Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for local development workflows and code conventions.
+
+---
+
 ## 📜 License
 
-Distributed under the MIT License. See `LICENSE` for details.
+Distributed under the MIT License. See [LICENSE](LICENSE) for details.
