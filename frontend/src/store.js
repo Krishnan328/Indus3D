@@ -3,10 +3,17 @@ import { create } from "zustand";
 // Keep this build's API port in sync with backend/.env's FLASK_PORT. Vite
 // substitutes VITE_* values at build time, so restart the dev server or
 // rebuild after changing frontend/.env.
+// In production (served by Flask or Nginx), connect to the page's own origin
+// and port. In local Vite dev mode, connect to the backend on FLASK_PORT (default 5001).
+const isDev    = import.meta.env.DEV;
 const HOST     = window.location.hostname;
-let API_PORT = import.meta.env.VITE_API_PORT || "5001";
-let API      = `http://${HOST}:${API_PORT}`;
-let WS_URL   = `ws://${HOST}:${API_PORT}/api/v1/ws/twin`;
+const PROTO    = window.location.protocol === "https:" ? "https:" : "http:";
+const WS_PROTO = window.location.protocol === "https:" ? "wss:" : "ws:";
+let API_PORT   = isDev
+  ? (import.meta.env.VITE_API_PORT || "5001")
+  : (window.location.port || (window.location.protocol === "https:" ? "443" : "80"));
+let API        = isDev ? `http://${HOST}:${API_PORT}` : window.location.origin;
+let WS_URL     = isDev ? `ws://${HOST}:${API_PORT}/api/v1/ws/twin` : `${WS_PROTO}//${window.location.host}/api/v1/ws/twin`;
 
 let isHunting = false;
 const huntForApiPort = async () => {

@@ -74,11 +74,14 @@ Indus3D is an open-source, real-time digital twin and closed-loop quality contro
 - Klipper & Moonraker (for physical printer connection)
 
 ### Automated Install (Raspberry Pi / Linux)
+The automated installer configures the Python virtual environment, compiles the frontend SPA for low-memory standalone hosting, configures Moonraker's update manager, symlinks Klipper vibration modules, and installs the `indus3d.service` systemd daemon:
+
 ```bash
-git clone https://github.com/Krishnan328/indus3d.git
-cd indus3d
+git clone https://github.com/Krishnan328/Indus3D.git
+cd Indus3D
 ./install.sh
 ```
+Once installed, your dashboard is accessible at `http://<your-pi-ip>:5001`.
 
 ### Manual Setup
 

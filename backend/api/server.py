@@ -15,7 +15,7 @@ import socket
 import time
 from io import BytesIO
 import requests as req
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request, Response, send_from_directory
 from flask_cors import CORS
 from flasgger import Swagger
 from flask_sock import Sock
@@ -1006,7 +1006,32 @@ def update_maintenance_config():
 
 @app.route("/api/v1/reports/<path:filename>", methods=["GET"])
 def download_report(filename):
-    import os
-    from flask import send_from_directory
     reports_dir = os.path.join(os.path.dirname(__file__), "..", "reports")
     return send_from_directory(reports_dir, filename)
+
+# ── Frontend static file serving ─────────────────────────────────────────────
+# When Indus3D is installed on a Raspberry Pi or Linux SBC, the built React SPA
+# is located at frontend/dist. Flask serves index.html and static assets directly,
+# eliminating the need to run a separate Node/Vite development server in production.
+DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist"))
+
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_frontend(path):
+    # Do not intercept API, docs, or WebSocket endpoints
+    if path == "ws" or path.startswith("api/") or path.startswith("flasgger_static"):
+        return jsonify({"error": "Not found"}), 404
+
+    if os.path.exists(DIST_DIR):
+        file_path = os.path.join(DIST_DIR, path)
+        if path and os.path.isfile(file_path):
+            return send_from_directory(DIST_DIR, path)
+        index_file = os.path.join(DIST_DIR, "index.html")
+        if os.path.isfile(index_file):
+            return send_from_directory(DIST_DIR, "index.html")
+
+    return jsonify({
+        "status": "Indus3D backend running",
+        "message": "Frontend production bundle not found. Run 'npm run build' inside frontend/ to compile the dashboard."
+    }), 200
+

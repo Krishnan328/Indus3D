@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Project development roadmap (`docs/ROADMAP.md`).
 - GitHub issue and pull request templates (`.github/`).
 - Formal MIT License.
+- Direct production SPA hosting from Flask backend (`/frontend/dist`), eliminating Node.js background memory footprint on Klipper hosts.
+- Hardened automated installer (`install.sh`) supporting Debian / Raspberry Pi OS with auto-venv, system packages, and frontend compilation.
+- Moonraker update manager integration via `[update_manager indus3d]` in `moonraker.conf`.
+- Klipper safety macros in `indus3d.cfg` and ADXL345 accelerometer streaming module in `klipper_modules/indus_vibration.py`.
+- Automated systemd service unit (`indus3d.service`) with non-root user permissions and auto-restart policies.
+- Clean uninstallation script (`uninstall.sh`) with safe configuration restoration.
+- Unit test suite expansion to 32 tests covering static frontend serving and API route guards.
 
 ## [2.0.0-phase7] - React 18 Modular Frontend, Bento Dashboard & Touch UI
 
