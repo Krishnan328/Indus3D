@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import time
 
+from workers.dsp_bridge import dsp_bridge
+
 # ── Thresholds (tunable) ─────────────────────────────────────────────────────
 RMS_WARN      = 0.3   # g  — sustained vibration above this is high
 RMS_CRIT      = 0.8   # g  — critical vibration level
@@ -35,6 +37,7 @@ class VibrationMonitor:
         self._baseline_hz: dict[str, float] = {}   # axis -> established peak_hz
         self._baseline_window: list[tuple[str, float]] = []  # recent (axis, hz) for warmup
         self._warmup_samples = 10   # number of samples before baseline is trusted
+        self._last_collision_ts: float = 0.0  # timestamp of last processed collision event
 
     def update(self, dsp_latest: dict | None, print_state: str) -> tuple[dict, list]:
         """
@@ -45,11 +48,38 @@ class VibrationMonitor:
         Returns:
             (vib_dict, alerts)
         """
+        alerts: list[dict] = []
+
+        # ── Fast-path: collision detection ─────────────────────────────────────
+        collision = dsp_bridge.latest_collision
+        if collision and isinstance(collision, dict):
+            event_ts = float(collision.get("timestamp", 0.0))
+            if event_ts > self._last_collision_ts:
+                self._last_collision_ts = event_ts
+                peak_g = float(collision.get("peak_g", 0.0))
+                axis   = str(collision.get("axis", "?")).upper()
+                alerts.append({
+                    "id":    "collision_detected",
+                    "level": "critical",
+                    "msg":   (
+                        f"⚠️  Collision detected on {axis}-axis "
+                        f"({peak_g:.2f} g) — print paused"
+                    ),
+                })
+                # Fire corrective action (pause printer) — import here to
+                # avoid circular imports at module load time
+                try:
+                    from core.alert_actions import execute_alert_action
+                    execute_alert_action("collision_detected", print_state)
+                except Exception:
+                    pass  # best-effort — alert is already in the list
+
         if dsp_latest is None:
-            return dict(_EMPTY_VIB), []
+            vib_dict = dict(_EMPTY_VIB)
+            vib_dict["alerts"] = alerts
+            return vib_dict, alerts
 
         axes = {}
-        alerts: list[dict] = []
         is_printing = (print_state == "printing")
 
         for axis_name in ("x", "y", "z"):
@@ -120,6 +150,7 @@ class VibrationMonitor:
         """Call at print start to re-establish frequency baseline."""
         self._baseline_hz.clear()
         self._baseline_window.clear()
+        self._last_collision_ts = 0.0
 
 
 # Module-level singleton

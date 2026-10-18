@@ -360,7 +360,8 @@ class SimulatedTelemetryWorker:
 
             # ── Synthetic ADXL injection ──────────────────────────────────
             # Feed 32 samples per tick (~320 Hz effective) into the DSP
-            # bridge. Base Gaussian noise + 45 Hz resonance when moving fast.
+            # bridge as binary IDX packets. Base Gaussian noise + 45 Hz
+            # resonance when moving fast.
             if dsp_bridge.available:
                 import random as _rand
                 vel_proxy = getattr(self, "_motion_velocity", 0.0)
@@ -373,7 +374,9 @@ class SimulatedTelemetryWorker:
                     noise_z = _rand.gauss(0, 0.02)
                     # Inject printer resonance (X/Y in-plane ~45 Hz)
                     res = res_amp * math.sin(2 * math.pi * 45.0 * st)
-                    dsp_bridge.send_adxl(noise_x + res, noise_y + res, noise_z, st)
+                    dsp_bridge.send_adxl_binary(noise_x + res, noise_y + res, noise_z, st)
+                # Push velocity metadata so the Rust notch filter can mask motor artefacts
+                dsp_bridge.send_velocity_meta(self._ax.velocity, self._ay.velocity)
 
 
         elif self._state == "test":

@@ -86,6 +86,12 @@ ALERT_ACTIONS = {
     "stress_Z":    {"gcode": None, "description": "Z-axis stress high — check lead screw",          "severity": "info"},
     "ext_cycles":  {"gcode": None, "description": "Extruder heat cycles high — inspect heater",     "severity": "info"},
     "bed_cycles":  {"gcode": None, "description": "Bed heat cycles high — inspect bed wiring",      "severity": "info"},
+    # Collision / crash detected by the Rust fast-path detector
+    "collision_detected": {
+        "gcode":       "PAUSE",
+        "description": "Print paused — g-force spike detected (possible crash or layer knock)",
+        "severity":    "critical",
+    },
 }
 
 # Track which alerts have already triggered an action in this session

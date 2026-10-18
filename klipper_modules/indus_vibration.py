@@ -7,15 +7,18 @@
 # [indus_vibration]
 # udp_host: 127.0.0.1
 # udp_port: 3200
+# binary_mode: True   (optional, default True — use binary packets)
 
 import socket
 import logging
+import struct
 
 class IndusVibrationClient:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.udp_host = config.get("udp_host", "127.0.0.1")
         self.udp_port = config.getint("udp_port", 3200)
+        self.binary_mode = config.getboolean("binary_mode", True)
         
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
@@ -45,7 +48,8 @@ class IndusVibrationClient:
             return
             
         # Create a client object that Klipper will call with batches of data
-        client = ADXLUDPStreamer(self.sock, self.udp_host, self.udp_port)
+        client = ADXLUDPStreamer(self.sock, self.udp_host, self.udp_port,
+                                 binary=self.binary_mode)
         
         # Start Klipper's bulk sensor measurement
         # Klipper's ADXL345 class exposes 'setup_measure_client' or we can just 
@@ -66,34 +70,65 @@ class IndusVibrationClient:
         gcmd.respond_info(f"Indus3D: UDP vibration stream stopped for {chip_name or 'default'}")
 
 class ADXLUDPStreamer:
-    def __init__(self, sock, host, port):
+    # ADC scale: ADXL345 ±16g full-scale → 0.0039 g per raw count
+    _SCALE = 0.0039
+    # Binary packet magic prefix
+    _MAGIC = b"IDX"
+    # Per-sample binary struct: f32 timestamp, i16 x, i16 y, i16 z, u32 padding (14 bytes)
+    _SAMPLE_FMT = "<fhhhI"
+    _SAMPLE_SIZE = struct.calcsize(_SAMPLE_FMT)  # 14 bytes
+
+    def __init__(self, sock, host, port, binary=True):
         self.sock = sock
         self.addr = (host, port)
         self.name = "indus_vibration_client"
+        self.binary = binary
 
     def process_batch(self, eventtime, batch):
-        # Klipper bulk sensor batch format varies, but usually it's a list or numpy array
-        # of (time, x, y, z) or similar. We convert it to a simple CSV string to match 
-        # what our Rust engine expects.
-        
-        # Optimization: To avoid building huge strings on the Klipper Python side, 
-        # we batch them into chunks and send via UDP.
+        """Called by Klipper with each new batch of ADXL samples.
+
+        Each sample is (time, x_g, y_g, z_g) in physical units (g).
+        In binary mode the whole batch is packed into one UDP datagram:
+            3 bytes magic 'IDX' + N × 14-byte sample structs
+        In CSV mode (fallback) each sample is a comma-separated text line.
+        """
+        if not batch:
+            return
+        if self.binary:
+            self._send_binary(batch)
+        else:
+            self._send_csv(batch)
+
+    def _send_binary(self, batch):
+        """Pack samples as IDX magic + per-sample little-endian structs."""
+        buf = bytearray(self._MAGIC)
+        for sample in batch:
+            if len(sample) < 4:
+                continue
+            t, x, y, z = float(sample[0]), float(sample[1]), float(sample[2]), float(sample[3])
+            # Convert from g to raw ADC counts (clamp to i16 range)
+            xi = max(-32768, min(32767, int(round(x / self._SCALE))))
+            yi = max(-32768, min(32767, int(round(y / self._SCALE))))
+            zi = max(-32768, min(32767, int(round(z / self._SCALE))))
+            buf += struct.pack(self._SAMPLE_FMT, t, xi, yi, zi, 0)
+        if len(buf) > len(self._MAGIC):  # at least one valid sample
+            try:
+                self.sock.sendto(bytes(buf), self.addr)
+            except Exception:
+                pass  # UDP fire-and-forget
+
+    def _send_csv(self, batch):
+        """Legacy CSV fallback: one line per sample, tab/comma separated."""
         output = []
         for sample in batch:
-            # Assuming sample is (time, x_accel, y_accel, z_accel)
-            # which is the standard format for Klipper's adxl345 process_batch
             if len(sample) >= 4:
                 t, x, y, z = sample[0], sample[1], sample[2], sample[3]
                 output.append(f"{t:.6f},{x:.2f},{y:.2f},{z:.2f}\n")
-                
-        if not output:
-            return
-            
-        payload = "".join(output).encode('utf-8')
-        try:
-            self.sock.sendto(payload, self.addr)
-        except Exception:
-            pass # UDP is fire-and-forget, ignore socket buffer full errors
+        if output:
+            try:
+                self.sock.sendto("".join(output).encode("utf-8"), self.addr)
+            except Exception:
+                pass
 
 def load_config(config):
     return IndusVibrationClient(config)

@@ -17,21 +17,27 @@ Indus3D is an open-source, real-time digital twin and closed-loop quality contro
 - **Kinematic Model**: Tracks commanded vs. live physical toolhead position, finite-difference velocity, acceleration, and belt stress reversal dynamics.
 - **Thermal Model**: First-order thermal lag observer predicting true nozzle melt-zone temperature and early-warning thermal runaway detection.
 - **Extrusion Dynamics**: Calculates instantaneous volumetric flow ($mm^3/s$), bead cross-sectional area (stadium/pill model), and under/over-extrusion ratios.
-- **Vibration & Resonance Monitor**: Integrates with accelerometer/DSP streams to track structural vibration frequencies and dynamically adjust input shaping.
+- **Vibration & Resonance Monitor**: Integrates with high-speed ADXL345 accelerometer telemetry to track structural resonance frequencies and dynamically adjust input shaping.
 
-### 2. Autopilot Closed-Loop Quality Controller
+### 2. High-Speed Rust DSP Pipeline (`backend/dsp`)
+- **Binary ADXL Streaming**: 14-byte packed little-endian binary protocol (`IDX` header) streaming raw 3200 Hz accelerometer counts with low MCU overhead.
+- **Fast-Path Collision & Impact Detector**: Real-time g-force spike and kurtosis impulse detection debounced at sub-millisecond intervals. Instantly triggers safety alerts and pauses the print upon toolhead crash or severe layer knock.
+- **Slow-Path Spectral Telemetry with Motor Notch Filtering**: 1-Hz Hanning-windowed FFT calculating RMS, peak resonance frequency, kurtosis, and dynamic stiffness. Actively notches out motor step harmonics ($f = v \times \text{steps/mm}$) using velocity metadata from Python.
+- **Standalone CLI Resonance Analyser**: Parses Klipper `TEST_RESONANCES` CSV data, measures PSD half-power bandwidth damping ratio ($\zeta$), and recommends optimal input shapers (ZV, MZV, EI, 2HUMP_EI).
+
+### 3. Autopilot Closed-Loop Quality Controller
 - **Adaptive Flow Control (`M221`)**: Detects extrusion variations in real time and trims flow rate within safe physical bounds (85%–115%).
 - **Speed-Lag Compensation (`M220`)**: Automatically throttles print speed when positional lag exceeds mechanical compliance thresholds, smoothly recovering when lag clears.
 - **Dynamic Pressure Advance**: Adapts Klipper's `SET_PRESSURE_ADVANCE` on the fly based on volumetric flow rate and shear-thinning polymer rheology.
 - **Thermal Z-Offset Expansion Compensation**: Compensates for vertical frame thermal growth and layer height errors with anti-windup safety bounds.
 - **Predictive Clog Detection**: Halts or pauses before catastrophic grinding occurs if melt pressure exceeds motor torque limits.
 
-### 3. Bed Adaptation & Collision Safety Engine
+### 4. Bed Adaptation & Collision Safety Engine
 - **OrcaSlicer / PrusaSlicer / BambuStudio Profile Import**: Directly parses `printable_area`, `printable_height`, and `bed_exclude_area` (bed leveling screws, clips, wipe towers, purge buckets) from `.json` slicer profiles.
 - **Custom 3D Bed Models (STL)**: Upload, render, and inspect custom physical build plate geometries in Three.js with realistic metal/texture shading.
 - **Collision Guardrails**: Forbids downward Z corrections near or over bed screws and clips below clearance altitude ($Z < 10\text{ mm}$). Clamps total Z adjustments strictly within `[-0.25mm, +0.50mm]`.
 
-### 4. Modern Dashboard & Visualizer
+### 5. Modern Dashboard & Visualizer
 - **Interactive 3D Viewport**: WebGL/Three.js digital twin rendering live nozzle coordinates, extruder path contours, and physical exclusion zones.
 - **Full Klipper Controls**: Mainsail-style toolhead jogging, temperature gauges, extrusion controls, emergency stop, and interactive G-code terminal with live `[QC]` feedback tagging.
 - **Touch UI Mode**: Tailored for 5" and 7" Raspberry Pi touchscreen displays.
@@ -58,10 +64,17 @@ Indus3D is an open-source, real-time digital twin and closed-loop quality contro
 │  Extrusion  • Quality Ctrl │ │  /printer/gcode/script  │
 └─────────────┬──────────────┘ └──────────┬──────────────┘
               │                           │
+              │ UDP 3201 (1Hz Spectral)   │
+              │ UDP 3202 (Collision)      │
+              │ UDP 3203 (Velocity Meta)  │
 ┌─────────────▼──────────────┐            │
-│  DSP Pipeline (UDP / Rust) │            │
-│  ADXL345 Vibration Streams │            ▼
-└────────────────────────────┘    Klipper Firmware (MCU)
+│  Rust DSP Pipeline         │            │
+│  Fast-Path Crash Detector  │            │
+│  Slow-Path FFT + Notch     │            │
+│  Input Shaper Recommender  │            ▼
+└─────────────▲──────────────┘    Klipper Firmware (MCU)
+              │ UDP 3200 (Binary ADXL)
+              └───────────────────────────┘
 ```
 
 ---
@@ -138,14 +151,28 @@ Include Indus3D overrides in your Klipper `printer.cfg`:
 ---
 
 ## 🧪 Testing
-
-Indus3D includes a test suite covering bed safety geometry, extrusion dynamics, thermal runaway detection, and quality control logic:
-
-```bash
-cd backend
-source .venv/bin/activate
-pytest tests/ -v
-```
+ 
+-Indus3D includes a test suite covering bed safety geometry, extrusion dynamics, thermal runaway detection, and quality control logic:
+-
+-```bash
+-cd backend
+-source .venv/bin/activate
+-pytest tests/ -v
+-```
++Indus3D includes an automated test suite covering bed safety geometry, extrusion dynamics, thermal runaway detection, DSP binary protocol, collision alerts, and resonance analysis:
++
++#### Python Backend Tests (44 unit & integration tests)
++```bash
++cd backend
++source .venv/bin/activate
++pytest tests/ -v
++```
++
++#### Rust DSP Engine Tests (Unit tests for notch filter, FFT, fast-path spike detector)
++```bash
++cd backend/dsp
++cargo test
++```
 
 ---
 
