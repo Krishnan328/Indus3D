@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-phase7] - React 18 Modular Frontend, Bento Dashboard & Touch UI
+
+### Added
+- Modular Bento dashboard grid in `frontend/src/DashboardGrid.jsx`.
+- Dedicated 7-inch Raspberry Pi Klipper touchscreen interface (`frontend/src/TouchUI.jsx`).
+- Interactive Three.js 3D viewport with STL build plate rendering (`frontend/src/Viewport.jsx`, `frontend/src/PrintBed.jsx`).
+- WebGL multi-layer G-code path visualizer (`frontend/src/GCodeVisualizerV2.jsx`).
+- Drag-and-drop OrcaSlicer bed profile import modal (`frontend/src/BedSettingsModal.jsx`).
+- Calibration and resonance tuner panels (`frontend/src/CalibrationWizard.jsx`, `frontend/src/ShaperTuner.jsx`).
+- Electrical power monitor card (`frontend/src/PowerPanel.jsx`) and Spoolman picker (`frontend/src/SpoolPicker.jsx`).
+- Multi-camera video feed monitor (`frontend/src/CameraFeeds.jsx`) and timelapse gallery (`frontend/src/TimelapseGallery.jsx`).
+- Auto-reconnecting Zustand store with optimistic updates in `frontend/src/store.js`.
+- Theme system (`frontend/src/theme.js`) supporting dark mode and brutalist UI.
+
+### Removed
+- Legacy monolithic `GCodeVisualizer.jsx`.
+
 ## [2.0.0-phase6] - Bed Adaptation, OrcaSlicer Profile Import & REST API Architecture
 
 ### Added

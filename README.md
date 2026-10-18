@@ -2,7 +2,7 @@
 
 Indus3D is a next-generation real-time digital twin and closed-loop quality control platform for Klipper and Moonraker 3D printers.
 
-> **Release Phase 6**: Bed Adaptation, OrcaSlicer Profile Import & REST API Architecture
+> **Release Phase 7**: React 18 Modular Frontend, Bento Dashboard & Touch UI
 
 ---
 
@@ -199,6 +199,40 @@ Indus3D features an intelligent bed safety engine to prevent toolhead collisions
 ### 3. Running Bed Safety Tests
 ```bash
 pytest backend/tests/test_bed_safety.py -v
+```
+
+---
+
+## 🖥️ Modern React 18 Frontend & Touch UI (Phase 7)
+
+Indus3D provides a modern, responsive web dashboard built with React 18, Vite, Three.js, and Tailwind CSS:
+
+### 1. Modular Bento Dashboard (`DashboardGrid.jsx`)
+- Responsive card grid layout with dynamic reordering across desktop, tablet, and mobile displays.
+- Real-time gauge panels for volumetric flow, temperature lag, vibration spectrum, and toolhead position.
+
+### 2. Dedicated 7-inch Touch UI (`TouchUI.jsx`, `TouchNavbar.jsx`)
+- High-contrast, large-touch-target interface designed specifically for 5" and 7" Raspberry Pi Klipper touchscreens.
+- Quick-access controls for axis jogging, baby-stepping, temperature presets, and emergency stop.
+
+### 3. Three.js 3D Viewport (`Viewport.jsx`, `PrintBed.jsx`)
+- Interactive WebGL digital twin rendering the physical build plate, uploaded STL bed models, toolhead position, and exclusion zones.
+- Real-time layer-stepping G-code path visualizer (`GCodeVisualizerV2.jsx`).
+
+### 4. Slicer Import & Calibration Modals
+- **Bed Settings Modal (`BedSettingsModal.jsx`)**: Drag-and-drop OrcaSlicer profile import with real-time exclusion zone editor.
+- **Shaper Tuner & Calibration Wizard (`ShaperTuner.jsx`, `CalibrationWizard.jsx`)**: Visual input shaper resonance graphs and PID auto-tuning.
+
+### 5. Frontend Setup & Build
+```bash
+cd frontend
+npm install
+
+# Start development server with hot-reload (http://localhost:5173)
+npm run dev
+
+# Build optimized production bundle
+npm run build
 ```
 
 ---
