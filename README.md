@@ -2,7 +2,7 @@
 
 Indus3D is a next-generation real-time digital twin and closed-loop quality control platform for Klipper and Moonraker 3D printers.
 
-> **Release Phase 4**: Rust Accelerometer DSP Pipeline & Input Shaper Tuner
+> **Release Phase 5**: Physics Digital Twin Models & Closed-Loop Autopilot
 
 ---
 
@@ -136,6 +136,38 @@ The compiled binary runs automatically as a managed child process under `backend
 ### 3. Vibration Monitor & Input Shaper Tuner (`core/shaper_tuner.py`)
 - **Vibration Monitor**: Tracks mechanical harmonics, belt looseness, and frame resonance shifts during printing.
 - **Input Shaper Tuner**: Recommends optimal Klipper shaper algorithms (`zv`, `mzv`, `ei`, `2hump_ei`) and shaper damping ratios based on measured frequency response.
+
+---
+
+## 🧠 Physics-Based Digital Twin & Closed-Loop Autopilot (Phase 5)
+
+Indus3D runs a multi-physics mathematical digital twin that predicts print conditions in real time and applies closed-loop G-code interventions:
+
+### 1. Mathematical Physics Models (`digital_twin/control_models.py`)
+- **Kinematic Positional Lag**: Tracks instantaneous deviation between commanded G-code waypoints and live physical stepper positions, calculating finite-difference velocity and acceleration.
+- **Thermal Lag Observer**: First-order lumped thermal resistance model predicting core melt-zone temperature vs heater block temperature.
+- **Extrusion Dynamics**: Computes true volumetric flow rate ($Q = v \cdot w \cdot h\text{ mm}^3/s$) and stadium bead geometry to detect under/over-extrusion before surface defects form.
+- **Stepper Motor & Acoustic Models**: Calculates electromagnetic motor torque ($\tau$) and estimates side-channel sound pressure level ($dB$) to detect belt slippage and mechanical binding.
+- **Polymer Rheology Profiles**: Non-Newtonian shear-thinning and thermal properties for PLA, PETG, ABS, and TPU (`digital_twin/filament_profiles.py`).
+
+### 2. Autopilot Quality Controller (`digital_twin/quality_controller.py`)
+When Autopilot is enabled, Indus3D emits real-time closed-loop compensations via Moonraker:
+- **Adaptive Flow (`M221`)**: Trims extrusion multiplier (85%–115%) to maintain uniform bead cross-section.
+- **Speed Lag Throttle (`M220`)**: Scales print speed down during high-acceleration moves or mechanical resistance, recovering smoothly once lag clears.
+- **Dynamic Pressure Advance**: Continuously adjusts `SET_PRESSURE_ADVANCE` based on instantaneous volumetric flow rate.
+- **Anti-Windup Temperature Clamp**: Clamps dynamic temperature trims strictly within $\pm 2\text{ °C}$ (maximum $+12\text{ °C}$ over base temperature) to eliminate thermal runaway hazards.
+
+### 3. QA Audit Reporter & Digital Twin Simulator
+- **QA Reporter (`services/qa_reporter.py`)**: Automatically compiles print telemetry into structured PDF/JSON quality assurance certificates.
+- **Simulator Mode**: Run standalone physics simulations with baked 3DBenchy geometry:
+  ```bash
+  python main.py --sim --shape benchy --layers 40
+  ```
+
+### 4. Running Physics & Quality Tests
+```bash
+pytest backend/tests/test_quality_controller.py backend/tests/test_extrusion_model.py backend/tests/test_thermal_model.py -v
+```
 
 ---
 

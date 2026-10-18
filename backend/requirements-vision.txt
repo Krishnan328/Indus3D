@@ -1,0 +1,19 @@
+# Optional — only needed if you run backend/edge/ (camera-based print-
+# failure detection: watchdog.py needs opencv-python + numpy only;
+# inspector.py additionally needs ultralytics once you've trained a model —
+# see edge/harvester.py). Reports to the main backend's /api/v1/edge/*
+# routes; enable it there too (Settings > Vision Inspector, or
+# indus_overrides.cfg's edge_inspection_* keys) or detections are recorded
+# but never acted on.
+#
+# Do not install this on the same 1GB Pi / Creality mainboard running the
+# digital twin + API. ultralytics pulls in PyTorch, commonly 500MB-800MB+
+# on disk and a meaningful RAM footprint the moment it's actually imported
+# — budget a separate/companion device for vision, and have it talk to
+# the twin's API over the network instead of sharing a process with it.
+#
+# pip install -r requirements.txt -r requirements-vision.txt   (companion device only)
+
+opencv-python>=4.9.0
+numpy>=1.26.0
+ultralytics>=8.1.0

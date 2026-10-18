@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-phase5] - Physics Digital Twin Models & Closed-Loop Autopilot
+
+### Added
+- Analytical kinematic, thermal, extrusion, stepper dynamics, and acoustic models in `backend/digital_twin/control_models.py` & `control_models_extra.py`.
+- Material rheology and thermal profiles for PLA, PETG, ABS, and TPU in `backend/digital_twin/filament_profiles.py`.
+- Closed-loop Autopilot Quality Controller in `backend/digital_twin/quality_controller.py` with anti-windup clamping.
+- Post-print QA audit reporter in `backend/services/qa_reporter.py`.
+- Real-time G-code layer annotation service in `backend/services/gcode_annotator.py`.
+- Upgraded Digital Twin simulator in `backend/workers/simulator.py` with dynamic waypoints and baked 3DBenchy contours.
+- Edge inspection and watchdog monitor in `backend/edge/`.
+- Unit test suites for extrusion, thermal runaway, and quality controller logic.
+
 ## [2.0.0-phase4] - Rust Accelerometer DSP Pipeline & Input Shaper Tuner
 
 ### Added

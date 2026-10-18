@@ -22,6 +22,7 @@ class ExtrusionModel:
         feed=max(0.,delta_e/dt) if delta_e>0 else 0.
         vol_flow=feed*self._fil_area; exp_flow=velocity*self._bead_area
         ratio=(vol_flow/exp_flow) if exp_flow>0.5 else 1.
+        is_extruding = delta_e > 0 and exp_flow > 0.5
         if delta_e>0: self._filament_consumed_mm+=delta_e
         self._flow_hist.append(vol_flow)
         avg_flow=sum(self._flow_hist)/max(len(self._flow_hist),1)
@@ -29,8 +30,11 @@ class ExtrusionModel:
             "feed_rate_mm_s":round(feed,3),"volumetric_flow_mm3_s":round(vol_flow,4),
             "avg_flow_mm3_s":round(avg_flow,4),"expected_flow_mm3_s":round(exp_flow,4),
             "flow_ratio":round(ratio,3),
-            "under_extrusion_flag":ratio<0.80 and velocity>10,
-            "over_extrusion_flag":ratio>1.25 and velocity>10,
+            # A rapid travel move has non-zero velocity but no E delta. It is
+            # not an extrusion fault and must never trigger M221.
+            "is_extruding":is_extruding,
+            "under_extrusion_flag":is_extruding and ratio<0.80 and velocity>10,
+            "over_extrusion_flag":is_extruding and ratio>1.25 and velocity>10,
             "pressure_estimate_mm":round(self._la_k*velocity,4),
             "filament_consumed_m":round(self._filament_consumed_mm/1000.,4),
             "max_volumetric_flow":self._max_flow,
