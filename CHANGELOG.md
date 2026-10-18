@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-phase4] - Rust Accelerometer DSP Pipeline & Input Shaper Tuner
+
+### Added
+- Ultra-low-latency Rust accelerometer DSP pipeline crate in `backend/dsp/`.
+- UDP telemetry bridge (`backend/workers/dsp_bridge.py`) with `SO_REUSEADDR` socket management.
+- Mechanical vibration harmonic monitor in `backend/digital_twin/vibration_monitor.py`.
+- Input Shaper resonance tuner and peak detection algorithm in `backend/core/shaper_tuner.py`.
+
 ## [2.0.0-phase3] - Sensor Telemetry, Power (PZEM), Spoolman & Alert Webhooks
 
 ### Added

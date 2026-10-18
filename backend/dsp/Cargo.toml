@@ -1,0 +1,11 @@
+[package]
+name = "indus3d-dsp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustfft = "6.1"
+ndarray = "0.15"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.28", features = ["full"] }

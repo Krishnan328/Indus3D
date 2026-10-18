@@ -2,7 +2,7 @@
 
 Indus3D is a next-generation real-time digital twin and closed-loop quality control platform for Klipper and Moonraker 3D printers.
 
-> **Release Phase 3**: Sensor Telemetry, Power (PZEM), Spoolman & Alert Webhooks
+> **Release Phase 4**: Rust Accelerometer DSP Pipeline & Input Shaper Tuner
 
 ---
 
@@ -102,6 +102,40 @@ Indus3D monitors workshop environment and electrical power parameters beyond sta
 ```bash
 pytest backend/tests/test_alert_actions.py -v
 ```
+
+---
+
+## 🦀 High-Speed Vibration DSP & Resonance Tuning (Phase 4)
+
+Indus3D includes an ultra-low-latency accelerometer signal processing pipeline written in Rust and integrated with Python:
+
+```
+┌─────────────────────┐      UDP Stream      ┌─────────────────────┐
+│  ADXL345 / LIS2DW   │ ───────────────────► │  Rust DSP Pipeline  │
+│  Accelerometer Data │      (1600 Hz)       │  (backend/dsp/)     │
+└─────────────────────┘                      └──────────┬──────────┘
+                                                        │ UDP Metrics
+                                                        ▼ (FFT/RMS/PSD)
+┌─────────────────────┐  Harmonic Tracking   ┌─────────────────────┐
+│ Klipper Shaper Tune │ ◄─────────────────── │  Python DSP Bridge  │
+│ (core/shaper_tuner) │                      │ (dsp_bridge.py)     │
+└─────────────────────┘                      └─────────────────────┘
+```
+
+### 1. Rust DSP Accelerometer Pipeline (`backend/dsp/`)
+- Computes real-time Fast Fourier Transforms (FFT), Power Spectral Density (PSD), RMS acceleration, and dominant resonance peaks at up to 3200 Hz.
+- Emits compact binary vibration metrics over local UDP socket.
+
+### 2. Building the Rust DSP Pipeline
+```bash
+cd backend/dsp
+cargo build --release
+```
+The compiled binary runs automatically as a managed child process under `backend/workers/dsp_bridge.py`.
+
+### 3. Vibration Monitor & Input Shaper Tuner (`core/shaper_tuner.py`)
+- **Vibration Monitor**: Tracks mechanical harmonics, belt looseness, and frame resonance shifts during printing.
+- **Input Shaper Tuner**: Recommends optimal Klipper shaper algorithms (`zv`, `mzv`, `ei`, `2hump_ei`) and shaper damping ratios based on measured frequency response.
 
 ---
 
