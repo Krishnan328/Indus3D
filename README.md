@@ -2,7 +2,7 @@
 
 Indus3D is a next-generation real-time digital twin and closed-loop quality control platform for Klipper and Moonraker 3D printers.
 
-> **Release Phase 1**: Core Foundation, Unified Settings & Database Migrations
+> **Release Phase 2**: Session Authentication & Sliding-Window Rate Limiting
 
 ---
 
@@ -45,6 +45,31 @@ To initialize or upgrade the SQLite flight record database:
 ```bash
 cd backend
 python -m db.migrator
+```
+
+---
+
+## 🔐 Security & Access Control (Phase 2)
+
+Indus3D provides security middleware to protect the printer control plane against unauthorized network access and abusive request flooding:
+
+### 1. Token-Based Session Authentication (`api/auth.py`)
+- Set `INDUS3D_PASSWORD` in `backend/.env` to require authentication.
+- When configured, clients must exchange the password for a session token via `POST /api/v1/auth/login`.
+- Authenticated requests must pass the header:
+  ```http
+  Authorization: Bearer <session_token>
+  ```
+- Secure constant-time token comparison prevents timing attacks. If `INDUS3D_PASSWORD` is omitted, the server operates in open local development mode.
+
+### 2. Sliding-Window Rate Limiting (`api/rate_limiter.py`)
+- **Login Throttling**: Limits authentication attempts to 5 per 60 seconds per IP to prevent brute-force attacks.
+- **Hardware G-Code Throttling**: Restricts critical motion and temperature commands to 30 requests per minute per IP.
+- **Automatic IP Ban**: Clients exceeding rate limits repeatedly receive a 15-minute temporary ban (`HTTP 429 Too Many Requests`).
+
+### 3. Running Security Tests
+```bash
+pytest backend/tests/test_auth.py -v
 ```
 
 ---

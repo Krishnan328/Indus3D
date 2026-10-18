@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-phase2] - Session Authentication & Sliding-Window Rate Limiting
+
+### Added
+- Session-based token authentication middleware in `backend/api/auth.py`.
+- Sliding-window rate limiter in `backend/api/rate_limiter.py` with tiered protection:
+  - Brute-force protection on `/api/v1/auth/login`.
+  - Motion and hardware G-code execution throttling.
+  - Automatic temporary IP bans for repeated offenders.
+- Unit test suite for security and rate limiting in `backend/tests/test_auth.py`.
+
 ## [2.0.0-phase1] - Repository Foundation, Unified Settings & DB Migrations
 
 ### Added
