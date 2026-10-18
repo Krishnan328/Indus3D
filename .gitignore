@@ -79,3 +79,5 @@ htmlcov/
 !/backend/data/timelapse/.gitkeep
 /backend/data/bed/*.stl
 !/backend/data/bed/custom_bed.json
+/backend/edge/models/*.pt
+!/backend/edge/models/.gitkeep

@@ -43,6 +43,12 @@ Indus3D is an open-source, real-time digital twin and closed-loop quality contro
 - **Touch UI Mode**: Tailored for 5" and 7" Raspberry Pi touchscreen displays.
 - **Sensor Telemetry**: PZEM-004T AC power metering, Spoolman active spool tracking, and multi-channel webhook notifications (Discord/Telegram).
 
+### 6. Edge Computer Vision & Failure Detection (`backend/edge`)
+- **Zero-Dataset Motion Watchdog (`edge/watchdog.py`)**: Real-time OpenCV MOG2 background subtraction detecting detached prints or moving spaghetti masses without requiring any machine learning model or dataset.
+- **Pre-Trained YOLO Defect Inspector (`edge/inspector.py`)**: Automated downloader (`tools/download_vision_model.py`) fetching MIT-licensed weights fine-tuned on 9,000+ 3D printing failure images (detects `spaghetti`, `severe stringing`, `blobs/zits`, and `part detachment`).
+- **Autonomous First-Layer Squish**: Analyzes initial bead squish and baby-steps Klipper Z-offset on the fly (`SET_GCODE_OFFSET Z_ADJUST=±0.01`).
+- **Smart Safety Guardrails**: Pauses print and pulses alert LEDs on catastrophic failures; logs warnings and dispatches Discord/Telegram notifications on non-critical defects without aborting the job.
+
 ---
 
 ## 🏗️ Architecture
@@ -151,28 +157,21 @@ Include Indus3D overrides in your Klipper `printer.cfg`:
 ---
 
 ## 🧪 Testing
- 
--Indus3D includes a test suite covering bed safety geometry, extrusion dynamics, thermal runaway detection, and quality control logic:
--
--```bash
--cd backend
--source .venv/bin/activate
--pytest tests/ -v
--```
-+Indus3D includes an automated test suite covering bed safety geometry, extrusion dynamics, thermal runaway detection, DSP binary protocol, collision alerts, and resonance analysis:
-+
-+#### Python Backend Tests (44 unit & integration tests)
-+```bash
-+cd backend
-+source .venv/bin/activate
-+pytest tests/ -v
-+```
-+
-+#### Rust DSP Engine Tests (Unit tests for notch filter, FFT, fast-path spike detector)
-+```bash
-+cd backend/dsp
-+cargo test
-+```
+
+Indus3D includes an automated test suite covering bed safety geometry, extrusion dynamics, thermal runaway detection, DSP binary protocol, collision alerts, edge vision inspection, and resonance analysis:
+
+#### Python Backend Tests (56 unit & integration tests)
+```bash
+cd backend
+source .venv/bin/activate
+pytest tests/ -v
+```
+
+#### Rust DSP Engine Tests (Unit tests for notch filter, FFT, fast-path spike detector)
+```bash
+cd backend/dsp
+cargo test
+```
 
 ---
 

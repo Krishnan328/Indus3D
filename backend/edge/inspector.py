@@ -45,6 +45,8 @@ CLASS_LABELS = {
     "spaghetti": "Spaghetti Failure",
     "layer_shift": "Layer Shift",
     "detached": "Part Detached from Bed",
+    "stringing": "Severe Stringing",
+    "zits": "Extrusion Zits / Blobs",
     "z_too_high": "z_too_high",
     "z_too_low": "z_too_low",
 }
@@ -52,18 +54,17 @@ CLASS_LABELS = {
 
 def _load_model():
     if not os.path.isfile(config.MODEL_PATH):
-        logging.info(f"🔴 No trained model found at {config.MODEL_PATH}.")
-        logging.info("   Run edge/watchdog.py instead until you've trained one — see edge/harvester.py")
-        logging.info("   to start collecting images, then set INDUS3D_VISION_MODEL_PATH once trained.")
+        logging.warning(f"⚠️  No trained model found at {config.MODEL_PATH}.")
+        logging.info("   Run 'python tools/download_vision_model.py' to download pre-trained weights.")
+        logging.info("   Falling back to motion-based watchdog detector...")
         return None
     try:
         from ultralytics import YOLO
+        logging.info(f"🧠 Loading model: {config.MODEL_PATH}")
+        return YOLO(config.MODEL_PATH)
     except ImportError:
-        logging.info("🔴 ultralytics isn't installed. On the companion device: "
-                      "pip install -r requirements-vision.txt")
+        logging.warning("⚠️  ultralytics not installed. Falling back to motion-based watchdog detector...")
         return None
-    logging.info(f"🧠 Loading model: {config.MODEL_PATH}")
-    return YOLO(config.MODEL_PATH)
 
 
 def _grab_frame():
@@ -80,10 +81,12 @@ def _grab_frame():
 
 
 def run():
-    logging.info(f"🧠 Indus3D Inspector (YOLO) starting — device_id={config.DEVICE_ID}")
+    logging.info(f"🧠 Indus3D Inspector starting — device_id={config.DEVICE_ID}")
     model = _load_model()
     if model is None:
-        return  # already logged why — refuse to run rather than silently doing nothing useful
+        from edge import watchdog
+        watchdog.run()
+        return
 
     logging.info(f"📡 Camera: {config.WEBCAM_SNAPSHOT_URL}")
     logging.info(f"📡 Reporting to: {config.BACKEND_URL}")

@@ -50,7 +50,7 @@ def _pseudo_confidence(area: float) -> float:
     return float(max(0.0, min(100.0, 50.0 + (ratio - 1.0) * 50.0)))
 
 
-def run():
+def run(test_mode: bool = False):
     logging.info(f"👁️  Indus3D Watchdog (motion-based) starting — device_id={config.DEVICE_ID}")
     logging.info(f"📡 Camera: {config.WEBCAM_STREAM_URL}")
     logging.info(f"📡 Reporting to: {config.BACKEND_URL}")
@@ -58,10 +58,16 @@ def run():
     heartbeat = HeartbeatLoop(detector="motion")
     heartbeat.start()
 
-    cap = cv2.VideoCapture(config.WEBCAM_STREAM_URL)
+    cam_source = (
+        int(config.WEBCAM_STREAM_URL)
+        if str(config.WEBCAM_STREAM_URL).isdigit()
+        else config.WEBCAM_STREAM_URL
+    )
+    cap = cv2.VideoCapture(cam_source)
     if not cap.isOpened():
         logging.info("🔴 Cannot connect to the webcam stream. Check INDUS3D_WEBCAM_STREAM_URL / network.")
-        return
+        heartbeat.stop()
+        return False
 
     # MOG2 background subtractor: learns what the static scene (bed, frame)
     # looks like and isolates only the pixels that are actually moving.
@@ -70,14 +76,17 @@ def run():
     anomaly_counter = 0
     last_report_time = 0.0
     REPORT_COOLDOWN_S = 5.0  # don't hammer the backend every frame while sustained motion continues
+    frames_processed = 0
 
     logging.info("🟢 Watching for anomalous motion...")
     while True:
         ret, frame = cap.read()
         if not ret:
+            if test_mode:
+                break
             logging.info("⚠️  Stream dropped — reconnecting in 2s...")
             time.sleep(2)
-            cap = cv2.VideoCapture(config.WEBCAM_STREAM_URL)
+            cap = cv2.VideoCapture(cam_source)
             continue
 
         frame = cv2.resize(frame, (640, 480))
@@ -101,8 +110,16 @@ def run():
                 last_report_time = now
             anomaly_counter = 0  # reset so we require another full run-up before reporting again
 
+        frames_processed += 1
+        if test_mode and frames_processed >= 5:
+            heartbeat.stop()
+            cap.release()
+            return True
+
         time.sleep(0.05)  # ~20fps processing cap — plenty for this, keeps CPU reasonable
 
 
 if __name__ == "__main__":
-    run()
+    import sys
+    test = "--test" in sys.argv
+    run(test_mode=test)
