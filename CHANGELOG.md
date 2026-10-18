@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-phase6] - Bed Adaptation, OrcaSlicer Profile Import & REST API Architecture
+
+### Added
+- Bed Safety and Adaptation API in `backend/api/routes/bed.py`.
+- Slicer profile importer for OrcaSlicer and PrusaSlicer `.json` configurations.
+- Custom bed STL model upload and bounding geometry extraction.
+- Hardware exclusion zones preventing collisions with bed screws, clips, and purge buckets.
+- Unified REST API routing in `backend/api/routes/` (`printer.py`, `spools.py`, `edge.py`, `profile.py`, `sim.py`, `twin.py`).
+- Modernized API server (`backend/api/server.py`) with WebSocket broadcasting and CORS support.
+- Multi-threaded runtime coordinator in `backend/main.py`.
+- Unit test suite for bed safety and profile parsing in `backend/tests/test_bed_safety.py`.
+
+### Removed
+- Deprecated legacy routes `backend/api/routes/control.py` and `backend/api/routes/telemetry.py`.
+
 ## [2.0.0-phase5] - Physics Digital Twin Models & Closed-Loop Autopilot
 
 ### Added

@@ -2,7 +2,7 @@
 
 Indus3D is a next-generation real-time digital twin and closed-loop quality control platform for Klipper and Moonraker 3D printers.
 
-> **Release Phase 5**: Physics Digital Twin Models & Closed-Loop Autopilot
+> **Release Phase 6**: Bed Adaptation, OrcaSlicer Profile Import & REST API Architecture
 
 ---
 
@@ -167,6 +167,38 @@ When Autopilot is enabled, Indus3D emits real-time closed-loop compensations via
 ### 4. Running Physics & Quality Tests
 ```bash
 pytest backend/tests/test_quality_controller.py backend/tests/test_extrusion_model.py backend/tests/test_thermal_model.py -v
+```
+
+---
+
+## 🛡️ Bed Adaptation, Slicer Integration & REST API (Phase 6)
+
+Indus3D features an intelligent bed safety engine to prevent toolhead collisions with bed hardware and provides a comprehensive REST & WebSocket API:
+
+### 1. Bed Safety & Slicer Profile Import (`api/routes/bed.py`)
+- **Direct OrcaSlicer / PrusaSlicer Import**: Parses printer `.json` configuration files, extracting `printable_area` vertices, `bed_origin`, and `bed_exclude_area` polygons.
+- **Hardware Exclusion Zones**: Define keep-out zones for bed leveling screws, glass clips, wipe buckets, and purge lines.
+- **Custom 3D Bed Meshes**: Upload and serve custom STL build plates (`/api/v1/bed/stl`) for accurate 3D visualization.
+- **Collision Guardrails**: Prohibits toolhead downward movement over exclusion zones below clearance altitude ($Z < 10\text{ mm}$), clamping dynamic leveling offsets within `[-0.25mm, +0.50mm]`.
+
+### 2. REST API & WebSocket Reference
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/v1/printer/status` | Current printer status, temperatures, position, and job state |
+| `POST` | `/api/v1/printer/gcode` | Execute G-code command (rate-limited and sanitized) |
+| `POST` | `/api/v1/printer/emergency_stop` | Trigger immediate Klipper `M112` emergency stop |
+| `GET` | `/api/v1/bed/profile` | Current bed dimensions, origin, and exclusion zones |
+| `POST` | `/api/v1/bed/import-orca` | Import OrcaSlicer/PrusaSlicer JSON profile |
+| `POST` | `/api/v1/bed/exclusion-zones` | Add or update hardware exclusion zones |
+| `GET` | `/api/v1/twin/status` | Live digital twin metrics (flow, lag, thermal, vibration) |
+| `POST` | `/api/v1/twin/autopilot/toggle` | Enable or disable closed-loop Autopilot controller |
+| `GET` | `/api/v1/spools/active` | Active filament spool information from Spoolman |
+| `WS` | `/ws/twin` | 10 Hz real-time binary/JSON telemetry broadcast |
+
+### 3. Running Bed Safety Tests
+```bash
+pytest backend/tests/test_bed_safety.py -v
 ```
 
 ---
