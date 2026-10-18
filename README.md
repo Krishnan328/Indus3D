@@ -2,7 +2,7 @@
 
 Indus3D is a next-generation real-time digital twin and closed-loop quality control platform for Klipper and Moonraker 3D printers.
 
-> **Release Phase 2**: Session Authentication & Sliding-Window Rate Limiting
+> **Release Phase 3**: Sensor Telemetry, Power (PZEM), Spoolman & Alert Webhooks
 
 ---
 
@@ -70,6 +70,37 @@ Indus3D provides security middleware to protect the printer control plane agains
 ### 3. Running Security Tests
 ```bash
 pytest backend/tests/test_auth.py -v
+```
+
+---
+
+## 📡 Extended Telemetry, Power & Alert Integrations (Phase 3)
+
+Indus3D monitors workshop environment and electrical power parameters beyond standard Klipper thermals:
+
+### 1. PZEM-004T AC Power Monitoring (`services/pzem_monitor.py`)
+- Real-time voltage (V), current (A), active power (W), frequency (Hz), power factor (PF), and cumulative energy consumption (kWh) over Modbus RTU.
+- Configurable serial port (`PZEM_PORT=/dev/ttyUSB0`) and baudrate (`PZEM_BAUD=9600`).
+
+### 2. Spoolman Filament Integration (`services/spoolman_client.py`)
+- Direct API integration with Spoolman server for active filament tracking, material spool weights, and remaining filament length warnings.
+
+### 3. Flash Storage & Wear Monitor (`services/disk_monitor.py`)
+- Tracks Raspberry Pi eMMC / SD card storage utilization and alerts when disk free space drops below critical thresholds.
+
+### 4. Automated Print Timelapses (`core/timelapse.py`)
+- High-resolution frame capture synchronized on layer change (`G-code Z-hop` or `M240`).
+- Automated video rendering via `ffmpeg` on print completion.
+
+### 5. Multi-Channel Webhook Notifications (`core/notifications.py`, `core/alert_actions.py`)
+- Real-time print alerts and critical fault warnings dispatched to:
+  - **Discord**: Rich embeds with print progress and sensor stats.
+  - **Telegram**: Instant mobile push alerts with photo attachments.
+  - **Pushover**: High-priority alert tones for thermal faults.
+
+### 6. Running Telemetry & Alert Tests
+```bash
+pytest backend/tests/test_alert_actions.py -v
 ```
 
 ---

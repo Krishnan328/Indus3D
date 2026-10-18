@@ -1,0 +1,12 @@
+{
+  "active": "local",
+  "printers": [
+    {
+      "id": "local",
+      "name": "Local Printer",
+      "host": "127.0.0.1",
+      "port": 7125,
+      "last_mesh_calibration": null
+    }
+  ]
+}

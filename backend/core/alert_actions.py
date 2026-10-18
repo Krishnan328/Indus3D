@@ -10,11 +10,48 @@ Rules:
 - Every execution is logged to the action_log table in the DB
 """
 
+import logging
 import time
 from services.moonraker_client import MoonrakerClient
+from config.loader import get_power_cfg
+from config.settings import settings
+from core.notifications import notify
 from db.models import get_connection
 
 _client = MoonrakerClient()
+
+# Alert IDs eligible for the power-cutoff response, on top of their G-code
+# action. Deliberately a short, explicit list — this is not something every
+# alert type should be able to trigger.
+_POWER_CUTOFF_ELIGIBLE = {"ext_runaway", "bed_runaway"}
+
+
+def _flash_led_for_alert(severity: str, restore_key: str = None):
+    """Best-effort: pulse the configured 'alert' color a few times, then
+    settle on whichever steady color actually applies afterward. Critical
+    alerts (M112) leave the printer halted, so they settle on 'error';
+    warn-level alerts only ever fire mid-print (see the severity check in
+    execute_alert_action), so they settle back on 'printing'. Callers with
+    a state that doesn't map cleanly to "critical"/"warn" (e.g. the vision
+    inspector's pause, which lands on Klipper's own 'paused' state, not
+    'error') can pass restore_key explicitly instead. Never raises — a
+    misconfigured or absent LED must not affect the alert response itself,
+    which is already underway by the time this runs."""
+    try:
+        from config import printers as printer_registry
+        from config import led_profiles
+        from services import led_controller
+        active_id = printer_registry.list_printers()["active"]
+        profile = led_profiles.get_profile(active_id)
+        if not profile.get("enabled") or not profile.get("led_names"):
+            return
+        if restore_key is None:
+            restore_key = "error" if severity == "critical" else "printing"
+        flash_color = led_controller.scale_hex(profile["colors"]["alert"], profile.get("brightness", 100))
+        restore_color = led_controller.scale_hex(profile["colors"][restore_key], profile.get("brightness", 100))
+        led_controller.flash(profile["led_names"], flash_color, restore_hex=restore_color)
+    except Exception as e:
+        logging.info(f"⚠️  LED alert flash skipped: {e}")
 
 # ── Alert → corrective action mapping ─────────────────────────────────────────
 ALERT_ACTIONS = {
@@ -82,11 +119,28 @@ def execute_alert_action(alert_id: str, print_state: str) -> dict:
     success = _client.send_gcode(action["gcode"])
     _actioned.add(alert_id)
 
+    description = action["description"]
+
+    # Physical power cutoff — opt-in, only for the runaway alert IDs, only
+    # if indus_overrides.cfg has power_cutoff_enabled=true and a device
+    # configured. See indus_overrides.cfg for why this exists alongside
+    # M112 rather than instead of it.
+    cutoff_cfg = get_power_cfg()
+    if alert_id in _POWER_CUTOFF_ELIGIBLE and cutoff_cfg.get("cutoff_enabled") and cutoff_cfg.get("cutoff_device"):
+        device = cutoff_cfg["cutoff_device"]
+        cut_ok = _client.set_power(device, "off")
+        description += f" — power cutoff to '{device}' {'succeeded' if cut_ok else 'FAILED (check locked_while_printing)'}"
+
+    if action["severity"] == "critical" or (action["severity"] == "warn" and settings.NOTIFY_ON_WARN):
+        notify(f"⚠️ Indus3D: {description}")
+
+    _flash_led_for_alert(action["severity"])
+
     result = {
         "status":      "executed" if success else "failed",
         "alert_id":    alert_id,
         "gcode":       action["gcode"],
-        "description": action["description"],
+        "description": description,
         "severity":    action["severity"],
         "timestamp":   time.time(),
     }
@@ -143,4 +197,4 @@ def _log_action(result: dict):
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"⚠️  action_log DB: {e}")
+        logging.info(f"⚠️  action_log DB: {e}")

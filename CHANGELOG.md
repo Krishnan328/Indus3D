@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-phase3] - Sensor Telemetry, Power (PZEM), Spoolman & Alert Webhooks
+
+### Added
+- PZEM-004T AC energy and electrical power monitoring service (`backend/services/pzem_monitor.py`).
+- Spoolman active filament spool tracking client (`backend/services/spoolman_client.py`).
+- Storage space and flash wear monitor (`backend/services/disk_monitor.py`).
+- Hardware status LED controller with configurable RGB color profiles (`backend/services/led_controller.py`).
+- Layer-change print timelapse capture daemon (`backend/core/timelapse.py`).
+- Multi-channel notification webhook dispatchers for Discord, Telegram, and Pushover (`backend/core/notifications.py`).
+- Configurable alert action execution and deduplication engine (`backend/core/alert_actions.py`).
+- Extended `TelemetryWorker` with default offline state and multi-sensor concurrent monitoring.
+- Unit tests for alert dispatch and deduplication in `backend/tests/test_alert_actions.py`.
+
 ## [2.0.0-phase2] - Session Authentication & Sliding-Window Rate Limiting
 
 ### Added
