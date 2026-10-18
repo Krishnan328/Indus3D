@@ -1,14 +1,31 @@
-import time
-from db.models import get_connection
+import logging
+from logging.handlers import RotatingFileHandler
+import sys
+import os
 
-def log_command(command, source, status):
-    conn=get_connection(); cursor=conn.cursor()
-    cursor.execute("INSERT INTO command_log (timestamp,command,source,status) VALUES (?,?,?,?)",
-        (time.time(),command,source,status))
-    conn.commit(); conn.close()
+def init_logging():
+    os.makedirs("logs", exist_ok=True)
+    
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
+    if logger.handlers:
+        return
 
-def get_logs(limit=50):
-    conn=get_connection(); cursor=conn.cursor()
-    cursor.execute("SELECT timestamp,command,source,status FROM command_log ORDER BY id DESC LIMIT ?",(limit,))
-    rows=cursor.fetchall(); conn.close()
-    return [{"timestamp":r[0],"command":r[1],"source":r[2],"status":r[3]} for r in rows]
+    # File gets full timestamp and module info
+    file_formatter = logging.Formatter('[%(asctime)s] %(levelname)s [%(name)s.%(module)s]: %(message)s')
+    file_handler = RotatingFileHandler("logs/indus3d.log", maxBytes=5*1024*1024, backupCount=3)
+    file_handler.setFormatter(file_formatter)
+    
+    # Console gets simple output (we already have emojis for clarity)
+    console_formatter = logging.Formatter('%(message)s')
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(console_formatter)
+    
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    # Reduce noise from werkzeug (Flask's internal server)
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+init_logging()

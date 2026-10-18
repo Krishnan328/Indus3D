@@ -1,115 +1,125 @@
-import cv2
-import numpy as np
-import requests
+"""
+edge/watchdog.py
+------------------
+Motion-based print-failure detector — no trained model needed, works out
+of the box. Watches the webcam for a sustained blob of unexpected motion
+(a classic signature of a detached print dragging around, or a spaghetti
+failure) using OpenCV background subtraction, and reports detections to
+the main Indus3D backend, which decides whether to actually pause (see
+api/routes/edge.py).
+
+This is the "day one" detector — reasonable and immediately useful, but
+cruder than a trained model (edge/inspector.py). Run this until you've
+collected enough images with edge/harvester.py and trained a real model,
+then switch.
+
+Run on a companion device, not the printer's own Pi/mainboard — see
+requirements-vision.txt. Requires: pip install -r requirements-vision.txt
+(only opencv-python and numpy are actually used here; ultralytics/PyTorch
+are not needed for this script).
+"""
+
+import logging
 import time
 
-# --- CONFIGURATION ---
-PI_IP = "100.88.38.105"
-STREAM_URL = f"http://{PI_IP}/webcam/?action=stream"
-PAUSE_URL = f"http://{PI_IP}:7125/printer/print/pause"
+import cv2
+import numpy as np
 
-# Vision Thresholds
-# How many pixels of movement constitutes an "anomaly"? 
-# (You will tune this based on your specific camera distance/resolution)
-ANOMALY_AREA_THRESHOLD = 15000 
-# How many consecutive bad frames before we actually pause? (Prevents false alarms from glitches)
-MAX_ANOMALY_FRAMES = 30 
+from edge import config
+from edge.reporter import report_detection, HeartbeatLoop
 
-def emergency_pause():
-    """Fires the API command to halt the machine."""
-    print("\n🚨 CRITICAL FAILURE DETECTED: SPAGHETTI OR DETACHMENT!")
-    print("🚨 Sending Emergency Pause command to Moonraker...")
-    try:
-        res = requests.post(PAUSE_URL, timeout=5)
-        if res.ok:
-            print("✅ Printer Paused Successfully. Awaiting operator intervention.")
-        else:
-            print(f"⚠️ Pause failed with status code: {res.status_code}")
-    except Exception as e:
-        print(f"🔴 Network error sending pause: {e}")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
-def run_vision_watchdog():
-    print(f"👁️ Indus3D Watchdog booting up...")
-    print(f"📡 Connecting to camera stream at {PI_IP}...")
-    
-    cap = cv2.VideoCapture(STREAM_URL)
-    
+# How many pixels of moving-blob area constitutes an anomaly. Tune this for
+# your camera's distance/resolution/framing — there's no universal value.
+ANOMALY_AREA_THRESHOLD = 15000
+
+# Consecutive anomalous frames required before actually reporting — a
+# single glitchy frame (camera noise, someone walking past) shouldn't
+# trigger a pause; sustained motion for several seconds should.
+ANOMALY_FRAMES_TO_TRIGGER = 30
+
+
+def _pseudo_confidence(area: float) -> float:
+    """Confidence isn't a real probability for a motion-based detector the
+    way it is for a trained model — this maps "how far past the
+    threshold" to a 0-100 scale so the backend's confidence-threshold
+    setting still means something consistent between this script and
+    inspector.py."""
+    ratio = area / ANOMALY_AREA_THRESHOLD
+    return float(max(0.0, min(100.0, 50.0 + (ratio - 1.0) * 50.0)))
+
+
+def run(test_mode: bool = False):
+    logging.info(f"👁️  Indus3D Watchdog (motion-based) starting — device_id={config.DEVICE_ID}")
+    logging.info(f"📡 Camera: {config.WEBCAM_STREAM_URL}")
+    logging.info(f"📡 Reporting to: {config.BACKEND_URL}")
+
+    heartbeat = HeartbeatLoop(detector="motion")
+    heartbeat.start()
+
+    cam_source = (
+        int(config.WEBCAM_STREAM_URL)
+        if str(config.WEBCAM_STREAM_URL).isdigit()
+        else config.WEBCAM_STREAM_URL
+    )
+    cap = cv2.VideoCapture(cam_source)
     if not cap.isOpened():
-        print("🔴 ERROR: Cannot connect to webcam. Is Tailscale connected?")
-        return
+        logging.info("🔴 Cannot connect to the webcam stream. Check INDUS3D_WEBCAM_STREAM_URL / network.")
+        heartbeat.stop()
+        return False
 
-    # MOG2 Background Subtractor: This algorithm automatically learns what the "static" 
-    # background looks like (the bed, the frame) and isolates only the moving pixels.
+    # MOG2 background subtractor: learns what the static scene (bed, frame)
+    # looks like and isolates only the pixels that are actually moving.
     back_sub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=False)
-    
-    anomaly_counter = 0
-    print("🟢 Vision Online. Monitoring kinematic volume...")
 
+    anomaly_counter = 0
+    last_report_time = 0.0
+    REPORT_COOLDOWN_S = 5.0  # don't hammer the backend every frame while sustained motion continues
+    frames_processed = 0
+
+    logging.info("🟢 Watching for anomalous motion...")
     while True:
         ret, frame = cap.read()
         if not ret:
-            print("⚠️ Stream dropped. Attempting reconnect...")
+            if test_mode:
+                break
+            logging.info("⚠️  Stream dropped — reconnecting in 2s...")
             time.sleep(2)
-            cap = cv2.VideoCapture(STREAM_URL)
+            cap = cv2.VideoCapture(cam_source)
             continue
 
-        # 1. Resize frame to a standard 640x480 for fast, consistent mathematical processing
         frame = cv2.resize(frame, (640, 480))
-        
-        # 2. Extract the moving objects (Returns a black and white mask)
         fg_mask = back_sub.apply(frame)
-        
-        # 3. Clean up the mask (Erode/Dilate to remove static camera noise/flicker)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
-        
-        # 4. Find the boundaries of the moving blobs
         contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        total_moving_area = 0
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > 500: # Ignore tiny specks of dust
-                total_moving_area += area
-                # Draw a green bounding box around moving objects for our diagnostic UI
-                x, y, w, h = cv2.boundingRect(contour)
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
 
-        # --- AI DECISION LOGIC ---
-        
+        total_moving_area = sum(cv2.contourArea(c) for c in contours if cv2.contourArea(c) > 500)
+
         if total_moving_area > ANOMALY_AREA_THRESHOLD:
             anomaly_counter += 1
-            # Flash UI Red
-            cv2.rectangle(frame, (0,0), (640, 480), (0, 0, 255), 10)
-            cv2.putText(frame, f"ANOMALY DETECTED: {anomaly_counter}/{MAX_ANOMALY_FRAMES}", (20, 40), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA)
-        else:
-            # Cool down if the movement stops
-            if anomaly_counter > 0:
-                anomaly_counter -= 1
-                
-        # Draw the live area metric on screen
-        cv2.putText(frame, f"Kinematic Area: {int(total_moving_area)} px", (20, 450), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        elif anomaly_counter > 0:
+            anomaly_counter -= 1
 
-        # TRIGGER THE REFLEX
-        if anomaly_counter >= MAX_ANOMALY_FRAMES:
-            emergency_pause()
-            anomaly_counter = 0 # Reset
-            print("⏸️ Watchdog sleeping for 60 seconds to prevent API spam...")
-            time.sleep(60)
+        if anomaly_counter >= ANOMALY_FRAMES_TO_TRIGGER:
+            now = time.time()
+            if now - last_report_time > REPORT_COOLDOWN_S:
+                confidence = _pseudo_confidence(total_moving_area)
+                report_detection(confidence, "sustained_motion_anomaly", "motion")
+                last_report_time = now
+            anomaly_counter = 0  # reset so we require another full run-up before reporting again
 
-        # Show the diagnostic windows
-        cv2.imshow("Indus3D AI Vision", frame)
-        cv2.imshow("Binary Motion Mask", fg_mask)
+        frames_processed += 1
+        if test_mode and frames_processed >= 5:
+            heartbeat.stop()
+            cap.release()
+            return True
 
-        # Press 'q' to quit the watchdog
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        time.sleep(0.05)  # ~20fps processing cap — plenty for this, keeps CPU reasonable
 
-    cap.release()
-    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    run_vision_watchdog()
+    import sys
+    test = "--test" in sys.argv
+    run(test_mode=test)

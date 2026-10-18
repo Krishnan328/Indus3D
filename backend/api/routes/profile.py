@@ -5,7 +5,8 @@ Exposes the parsed printer profile to the frontend and provides
 a reload endpoint so changes to printer.cfg take effect without restart.
 """
 
-from flask import Blueprint, jsonify
+import logging
+from flask import Blueprint, jsonify, request
 
 profile_bp = Blueprint("profile", __name__)
 
@@ -45,3 +46,31 @@ def summary():
     from config.loader import get_profile
     from config.cfg_parser import profile_summary
     return profile_summary(get_profile()), 200, {"Content-Type": "text/plain"}
+
+@profile_bp.route("/preferences", methods=["GET"])
+def get_preferences():
+    from db.models import get_connection
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT key, value FROM user_preferences")
+        prefs = {row[0]: row[1] for row in cursor.fetchall()}
+        conn.close()
+        return jsonify(prefs)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@profile_bp.route("/preferences", methods=["POST"])
+def update_preferences():
+    from db.models import get_connection
+    try:
+        data = request.json or {}
+        conn = get_connection()
+        cursor = conn.cursor()
+        for k, v in data.items():
+            cursor.execute("INSERT INTO user_preferences (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (k, str(v)))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

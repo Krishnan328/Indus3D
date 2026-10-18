@@ -1,0 +1,54 @@
+{
+  "size_x_mm": 220.0,
+  "size_y_mm": 220.0,
+  "size_z_mm": 270.0,
+  "origin_center": false,
+  "min_x": 0.0,
+  "max_x": 220.0,
+  "min_y": 0.0,
+  "max_y": 220.0,
+  "min_z": 0.0,
+  "max_z": 270.0,
+  "printable_area": [
+    [
+      0.0,
+      0.0
+    ],
+    [
+      220.0,
+      0.0
+    ],
+    [
+      220.0,
+      220.0
+    ],
+    [
+      0.0,
+      220.0
+    ]
+  ],
+  "bed_exclude_area": [
+    [
+      [
+        0.0,
+        0.0
+      ],
+      [
+        30.0,
+        0.0
+      ],
+      [
+        30.0,
+        30.0
+      ],
+      [
+        0.0,
+        30.0
+      ]
+    ]
+  ],
+  "clearance_height_mm": 10.0,
+  "has_custom_model": false,
+  "custom_model_filename": null,
+  "source_name": "OrcaSlicer (Test Ender)"
+}

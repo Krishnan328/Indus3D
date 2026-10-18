@@ -24,6 +24,13 @@ export default defineConfig([
     },
     rules: {
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      // These draft editors intentionally synchronize API-loaded settings into
+      // editable local state. The React Compiler advisory treats that common
+      // form pattern as a cascading-render risk even though each sync is
+      // driven by an asynchronous API refresh.
+      'react-hooks/set-state-in-effect': 'off',
+      // Relative timestamps are intentionally calculated while rendering.
+      'react-hooks/purity': 'off',
     },
   },
 ])

@@ -16,24 +16,27 @@
  */
 
 import React, { useState } from "react";
-import { RefreshCw, Cpu } from "lucide-react";
+import { RefreshCw, Cpu, Layers } from "lucide-react";
 import { useStore } from "./store";
+import { BedSettingsModal } from "./BedSettingsModal";
 
 export function ProfileBar({ isDarkMode }) {
   const profile       = useStore((s) => s.profile);
   const profileSource = useStore((s) => s.profileSource);
   const reloadProfile = useStore((s) => s.reloadProfile);
   const simMode       = useStore((s) => s.simMode);
+  const displayName   = useStore((s) => s.uiPrefs.printerDisplayName);
 
   const [reloading, setReloading] = useState(false);
   const [feedback,  setFeedback]  = useState("");
+  const [showBedModal, setShowBedModal] = useState(false);
 
   const handleReload = async () => {
     setReloading(true);
     setFeedback("");
     const result = await reloadProfile();
     setReloading(false);
-    setFeedback(result.ok ? `✅ Reloaded from ${result.source}` : `❌ ${result.message}`);
+    setFeedback(result.ok ? `✅ Reloaded from ${profileSource}` : `❌ ${result.message}`);
     setTimeout(() => setFeedback(""), 4000);
   };
 
@@ -50,26 +53,39 @@ export function ProfileBar({ isDarkMode }) {
                                           "text-red-400";
 
   return (
-    <div className={`flex items-center justify-between px-4 py-1.5 mb-2 rounded-xl border text-xs font-mono ${bar}`}>
-      <div className="flex items-center gap-3">
-        <Cpu size={13} className="opacity-60" />
-        <span className="font-bold tracking-wide text-gray-300">
-          {profile.printer_name ?? "Unknown Printer"}
-        </span>
-        <span className="opacity-40">|</span>
-        <span className="opacity-60">
-          {profile.bed?.size_x_mm ?? 0} × {profile.bed?.size_y_mm ?? 0} × {profile.bed?.size_z_mm ?? 0} mm
-        </span>
-        <span className="opacity-40">|</span>
-        <span className="opacity-60">
-          ⌀{profile.hotend?.nozzle_diameter_mm ?? "?"} mm nozzle
-        </span>
-        {simMode && (
-          <span className="px-2 py-0.5 bg-blue-700 text-white rounded-full text-[9px] font-bold uppercase tracking-widest">
-            SIM
+    <>
+      <div className={`flex items-center justify-between px-4 py-1.5 mb-2 rounded-xl border text-xs font-mono ${bar}`}>
+        <div className="flex items-center gap-3">
+          <Cpu size={13} className="opacity-60" />
+          <span className="font-bold tracking-wide text-gray-300">
+            {displayName?.trim() || profile?.printer_name || "Unknown Printer"}
           </span>
-        )}
-      </div>
+          <span className="opacity-40">|</span>
+          <button
+            onClick={() => setShowBedModal(true)}
+            title="Configure bed geometry, import OrcaSlicer profile, or upload bed STL"
+            className="flex items-center gap-1.5 opacity-70 hover:opacity-100 hover:text-emerald-400 transition-colors cursor-pointer"
+          >
+            <Layers size={11} className="text-emerald-400" />
+            <span>
+              {profile?.bed?.size_x_mm ?? 0} × {profile?.bed?.size_y_mm ?? 0} × {profile?.bed?.size_z_mm ?? 0} mm
+            </span>
+            {(profile?.bed?.bed_exclude_area?.length ?? 0) > 0 && (
+              <span className="px-1 py-0.2 rounded bg-red-500/20 text-red-400 text-[8px] font-bold">
+                {profile.bed.bed_exclude_area.length} SCREWS
+              </span>
+            )}
+          </button>
+          <span className="opacity-40">|</span>
+          <span className="opacity-60">
+            ⌀{profile?.hotend?.nozzle_diameter_mm ?? "?"} mm nozzle
+          </span>
+          {simMode && (
+            <span className="px-2 py-0.5 bg-blue-700 text-white rounded-full text-[9px] font-bold uppercase tracking-widest">
+              SIM
+            </span>
+          )}
+        </div>
 
       <div className="flex items-center gap-3">
         {feedback && <span className="text-[10px]">{feedback}</span>}
@@ -89,5 +105,7 @@ export function ProfileBar({ isDarkMode }) {
         </button>
       </div>
     </div>
+    {showBedModal && <BedSettingsModal onClose={() => setShowBedModal(false)} />}
+  </>
   );
 }

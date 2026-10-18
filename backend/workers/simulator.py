@@ -1,3 +1,5 @@
+import os
+
 """
 workers/simulator.py
 ----------------------
@@ -12,6 +14,7 @@ Key fixes in this version:
   5. Sim uses indus_sim_ender3.cfg profile (Ender 3 framework)
 """
 
+import logging
 import math
 import time
 import random
@@ -25,16 +28,21 @@ from digital_twin.thermal_model import thermal_model
 from digital_twin.extrusion_model import extrusion_model
 from digital_twin.snapshot_logger import log_snapshot
 from digital_twin.quality_controller import quality_controller
+from digital_twin.vibration_monitor import vibration_monitor
 from config.loader import get_profile
+from config.settings import settings
 from workers.gcode_shapes import get_shape_gcode
+from workers.dsp_bridge import dsp_bridge
+from digital_twin.bed_safety import bed_safety
 
-POLL_HZ          = 10
+POLL_HZ          = settings.TWIN_TICK_HZ
 _DT              = 1.0 / POLL_HZ
-WAYPOINTS_PER_TICK = 5      # advance this many waypoints each tick for visible speed
+WAYPOINTS_PER_TICK = 4     # 12k full-detail waypoints complete in ~60–90 s
 
 # CLI flags
 _shape  = "benchy"
-_layers = 30       # fewer layers = faster visual completion
+_layers = 240      # benchy: full 0.2 mm / ~48 mm preview (not sparse 0.8 mm slices).
+                   # cube: still a literal layer count. Override with --layers.
 for i, arg in enumerate(sys.argv):
     if arg == "--shape"  and i + 1 < len(sys.argv): _shape  = sys.argv[i + 1]
     if arg == "--layers" and i + 1 < len(sys.argv): _layers = int(sys.argv[i + 1])
@@ -130,17 +138,40 @@ class _AxisSim:
 class SimulatedTelemetryWorker:
 
     def __init__(self):
-        self.latest: dict          = {}
+        self._last_segment_distance = 0.0
+
+        self.latest: dict          = {
+            "online": True,
+            "sim": True,
+            "print_state": "standby",
+            "cmd_x": 110.0, "cmd_y": 110.0, "cmd_z": 5.0, "cmd_e": 0.0,
+            "live_x": 110.0, "live_y": 110.0, "live_z": 5.0,
+            "ext_temp": 24.0, "ext_target": 0.0, "ext_pwm": 0.0,
+            "bed_temp": 24.0, "bed_target": 0.0,
+            "progress": 0.0,
+            "quality": {"active": quality_controller.active, "corrections": []},
+            "kinematics": {},
+            "thermals": {},
+            "extrusion": {},
+            "vibration": {},
+            "power": {"voltage": 0., "current": 0., "power": 0.},
+            "environment": {"temperature": 24., "humidity": 45.},
+            "gcode_feed": [],
+            "maintenance_hints": [],
+        }
         self.power                 = {"voltage": 0., "current": 0., "power": 0.}
         self.environment           = {"temperature": 24., "humidity": 45.}
         self.gcode_feed: deque     = deque(maxlen=10)
         self.print_history: list   = []
         self.maintenance_hints: list = []
+        self.excluded_objects: set = set()
+        self.maintenance_status: list = []
 
         self.shape      = _shape
         self.gcode_str  = ""
         self._waypoints: list = []
         self._wp_idx    = 0
+        self._wp_time_debt = 0.0  # seconds of real-print-time still owed this tick
 
         self._running      = True
         self._t            = 0.
@@ -174,6 +205,20 @@ class SimulatedTelemetryWorker:
 
         self._ae              = 0.
         self._ae_multiplier   = 1.
+        # The simulator teleports through several waypoints each tick.  Keep a
+        # physical velocity derived from those moves rather than reporting the
+        # axis simulator's post-teleport zero.  The extrusion model depends on
+        # it for a meaningful expected flow calculation.
+        self._motion_velocity = 0.
+        # _start_print changes the state before the first print-tick advances
+        # a waypoint. Keep this defined for that transition frame as well.
+        self._tick_extruding_distance = 0.
+        nozzle = h.get("nozzle_diameter_mm", 0.4)
+        filament = h.get("filament_diameter_mm", 1.75)
+        line_w = profile.get("print", {}).get("line_width_mm", nozzle)
+        layer_h = profile.get("print", {}).get("layer_height_mm", 0.2)
+        bead_area = max(0.001, (line_w - layer_h) * layer_h + math.pi * (layer_h / 2) ** 2)
+        self._e_per_mm = bead_area / (math.pi * (filament / 2) ** 2)
         self._state           = "idle"
         self._pending_gcodes  = []
 
@@ -192,14 +237,30 @@ class SimulatedTelemetryWorker:
         self._active_faults = {}
 
         # Pre-build G-code immediately — endpoint will serve it on first request
-        print(f"🖨️  Pre-building sim G-code: {self.shape}, {_layers} layers…")
-        self.gcode_str, self._waypoints = get_shape_gcode(self.shape, _layers)
-        print(f"✅ Sim G-code ready: {len(self._waypoints)} waypoints, "
+        logging.info(f"🖨️  Pre-building sim G-code: {self.shape}, {_layers} layers…")
+        import os
+        # Robust path resolution relative to backend/ directory
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        # Check both backend/ and root folder just in case
+        gcode_path = os.path.join(base_dir, "3dbenchy(3)_1h58m.gcode")
+        if not os.path.exists(gcode_path):
+            gcode_path = os.path.join(os.path.dirname(base_dir), "3dbenchy(3)_1h58m.gcode")
+
+        if self.shape == "benchy" and os.path.exists(gcode_path):
+            with open(gcode_path, "r") as f:
+                self.gcode_str = f.read()
+            self._waypoints = self._parse_real_gcode(self.gcode_str)
+        else:
+            self.gcode_str, self._waypoints = get_shape_gcode(self.shape, _layers)
+
+        logging.info(f"✅ Sim G-code ready: {len(self._waypoints)} waypoints, "
               f"{len(self.gcode_str)} bytes")
 
         self.gcode_feed.append({"byte": 0, "text": f"; Indus3D Sim — {self.shape.upper()}"})
         self.gcode_feed.append({"byte": 0, "text": f"; {len(self._waypoints)} waypoints ready"})
         self.gcode_feed.append({"byte": 0, "text": "G28 ; Home"})
+        self._print_start_time = time.time()
         self.gcode_feed.append({
             "byte": 0,
             "text": f"G1 X{self._bed_cx:.1f} Y{self._bed_cy:.1f} F6000 ; Move to centre"
@@ -207,14 +268,44 @@ class SimulatedTelemetryWorker:
 
     def start(self):
         self._thread.start()
-        print("📡 SimulatedTelemetryWorker started")
-        print(f"   Will start printing in ~5 seconds")
+        logging.info("📡 SimulatedTelemetryWorker started")
+        logging.info(f"   Will start printing in ~5 seconds")
 
     def stop(self): self._running = False
 
     def inject_gcode(self, gcode: str):
         """Called by control route when user sends from terminal."""
         self._pending_gcodes.append(gcode.strip().upper())
+
+    def home(self):
+        """Mainsail-style home action for the offline dashboard."""
+        self._ax.move_to(self._bed_cx)
+        self._ay.move_to(self._bed_cy)
+        self._az.move_to(5.0)
+        self.gcode_feed.append({"byte": 0, "text": "[INDUS] G28 ; Sim homed"})
+
+    def jog(self, x=0.0, y=0.0, z=0.0, e=0.0):
+        """Bounded relative motion with bed screw and exclusion zone collision checking."""
+        cur_x, cur_y, cur_z = self._ax.pos, self._ay.pos, self._az.pos
+        target_x = max(bed_safety.min_x, min(bed_safety.max_x, cur_x + x))
+        target_y = max(bed_safety.min_y, min(bed_safety.max_y, cur_y + y))
+        target_z = max(bed_safety.min_z, min(bed_safety.max_z, cur_z + z))
+
+        # Check exclusion zone collision (bed screws, clamps, clips)
+        is_safe, reason = bed_safety.validate_move(cur_x, cur_y, cur_z, target_x, target_y, target_z)
+        if not is_safe:
+            self.gcode_feed.append({"byte": 0, "text": f"[SAFETY BLOCKED] {reason}"})
+            logging.warning(f"🛡️ Jog blocked: {reason}")
+            return False
+
+        self._ax.move_to(target_x)
+        self._ay.move_to(target_y)
+        self._az.move_to(target_z)
+        if e != 0.0:
+            self._ae += e
+        terms = " ".join(f"{axis}{value:+.1f}" for axis, value in (("X", x), ("Y", y), ("Z", z), ("E", e)) if value)
+        self.gcode_feed.append({"byte": 0, "text": f"[INDUS] Jog {terms}"})
+        return True
 
     def inject_quality_command(self, cmd: str):
         """Called by quality_controller to show M221/M220 in terminal."""
@@ -225,7 +316,7 @@ class SimulatedTelemetryWorker:
         while self._running:
             t0 = time.time()
             try:    self._tick()
-            except Exception as e: print(f"⚠️ Sim: {e}")
+            except Exception as e: logging.info(f"⚠️ Sim: {e}")
             time.sleep(max(0., _DT - (time.time() - t0)))
 
     def _tick(self):
@@ -240,11 +331,53 @@ class SimulatedTelemetryWorker:
             self._start_print()
 
         elif self._state == "printing":
-            for _ in range(WAYPOINTS_PER_TICK):   # advance multiple WPs per tick
+            self._tick_extruding_distance = 0.0
+            # Real-time simulation: advance waypoints using their actual durations
+            # (distance / feedrate). Each tick has _DT seconds of real print time
+            # to spend. This means a 1h58m G-code file runs in ~1h58m.
+            time_budget = _DT + self._wp_time_debt
+            while time_budget > 0:
                 self._advance_waypoint()
                 if self._wp_idx >= len(self._waypoints):
                     self._finish_print()
                     break
+                wp = self._waypoints[self._wp_idx]
+                dur = wp.get("duration", 0.0)
+                if dur <= 0:
+                    # Instant move (pure Z-hop or zero-distance); consume no time
+                    time_budget -= 0.0
+                    break  # avoid infinite loop on zero-duration waypoints
+                time_budget -= dur
+            # Carry over any unused budget (negative = overspent, positive = underspent)
+            self._wp_time_debt = time_budget if time_budget > 0 else 0.0
+            # The extrusion model observes E once per tick, so its comparison
+            # velocity must represent the same set of moves—not just the last
+            # contour segment processed above.
+            # Simulation runs faster than the emitted G-code's physical feed
+            # rate.  Use its actual visual-time path speed here so commanded
+            # E and expected bead flow remain on the same time basis.
+            self._motion_velocity = self._tick_extruding_distance / _DT
+
+            # ── Synthetic ADXL injection ──────────────────────────────────
+            # Feed 32 samples per tick (~320 Hz effective) into the DSP
+            # bridge as binary IDX packets. Base Gaussian noise + 45 Hz
+            # resonance when moving fast.
+            if dsp_bridge.available:
+                import random as _rand
+                vel_proxy = getattr(self, "_motion_velocity", 0.0)
+                res_amp   = min(0.5, vel_proxy / 200.0)   # scale with speed, cap 0.5g
+                t0 = self._t
+                for s in range(32):
+                    st = t0 + s * (_DT / 32)
+                    noise_x = _rand.gauss(0, 0.03)
+                    noise_y = _rand.gauss(0, 0.03)
+                    noise_z = _rand.gauss(0, 0.02)
+                    # Inject printer resonance (X/Y in-plane ~45 Hz)
+                    res = res_amp * math.sin(2 * math.pi * 45.0 * st)
+                    dsp_bridge.send_adxl_binary(noise_x + res, noise_y + res, noise_z, st)
+                # Push velocity metadata so the Rust notch filter can mask motor artefacts
+                dsp_bridge.send_velocity_meta(self._ax.velocity, self._ay.velocity)
+
 
         elif self._state == "test":
             self._advance_test()
@@ -259,7 +392,8 @@ class SimulatedTelemetryWorker:
         cmd_x, live_x, vx = self._ax.step(_DT)
         cmd_y, live_y, vy = self._ay.step(_DT)
         cmd_z, live_z, vz = self._az.step(_DT)
-        velocity = round(math.sqrt(vx**2 + vy**2 + vz**2), 3)
+        axis_velocity = math.sqrt(vx**2 + vy**2 + vz**2)
+        velocity = round(max(axis_velocity, self._motion_velocity), 3)
 
         self._process_faults()
 
@@ -295,20 +429,32 @@ class SimulatedTelemetryWorker:
 
         is_active  = self._state in ("printing", "test")
 
+        # ── Area 4: Physical-to-Virtual Coordinate Linear Mapping ───────────
+        # Based on research paper: converts raw mechanical position to virtual coordinate
+        virtual_x = round(-0.8935 * live_x + 295.0, 3)
+        virtual_y = round( 1.0113 * live_y +   3.587, 3)
+        virtual_z = round(-0.8544 * live_z + 299.85, 3)
+
+        in_screw_zone, zone_idx = bed_safety.is_in_exclusion_zone(live_x, live_y, live_z)
+
         snap = {
             "online":        True,
             "sim":           True,
             "cmd_x":         cmd_x,  "cmd_y":   cmd_y,   "cmd_z":  cmd_z,
             "cmd_e":         round(self._ae * self._ae_multiplier, 4),
             "live_x":        live_x, "live_y":  live_y,  "live_z": live_z,
+            "virtual_x":     virtual_x, "virtual_y": virtual_y, "virtual_z": virtual_z,
+            "bed_collision_hazard": in_screw_zone,
+            "bed_collision_zone": zone_idx,
             "velocity":      velocity,
             "ext_temp":      self._ext.temp,   "ext_target": self._ext.target,
             "ext_pwm":       self._ext.pwm,
             "bed_temp":      self._bed.temp,   "bed_target": self._bed.target,
             "print_state":   "printing" if is_active else "standby",
-            "filename":      f"sim_{self.shape}.gcode" if is_active else "",
-            "file_position": current_byte if is_active else 0,
+            "filename":      f"sim_{self.shape}.gcode",
+            "file_position": current_byte,
             "progress":      round(progress, 4),
+            "segment_distance": self._last_segment_distance,
             "print_duration": int(self._t),
             "time_remaining": time_rem,
             "speed_factor":  100,
@@ -319,6 +465,19 @@ class SimulatedTelemetryWorker:
         kin  = kinematic_model.update(snap)
         thm  = thermal_model.update(snap)
         ext_ = extrusion_model.update(snap)
+
+        # The simulation deliberately time-compresses a full G-code file. The
+        # wall-clock delta used by the general extrusion model is therefore
+        # susceptible to scheduler jitter, which used to fabricate M221
+        # corrections on a healthy simulated print.  In sim mode the known
+        # source of flow deviation is _ae_multiplier, so expose that ground
+        # truth while retaining the model's live-mode calculations unchanged.
+        sim_extruding = self._tick_extruding_distance > 0 if self._state == "printing" else False
+        sim_ratio = self._ae_multiplier if sim_extruding else 1.0
+        ext_["flow_ratio"] = round(sim_ratio, 3)
+        ext_["is_extruding"] = sim_extruding
+        ext_["under_extrusion_flag"] = sim_extruding and sim_ratio < 0.80
+        ext_["over_extrusion_flag"] = sim_extruding and sim_ratio > 1.25
 
         # Quality controller — log commands to terminal in sim
         if is_active:
@@ -331,11 +490,18 @@ class SimulatedTelemetryWorker:
 
         self._update_maintenance(kin, thm)
 
+        # Vibration monitor — reads latest DSP result and raises alerts
+        vib_dict, _vib_alerts = vibration_monitor.update(
+            dsp_bridge.latest, snap["print_state"]
+        )
+
         self.latest = {
             **snap,
             "kinematics":        kin,
             "thermals":          thm,
             "extrusion":         ext_,
+            "vibration":         vib_dict,
+            "exclude_object": self._get_exclude_payload(),
             "power":             self.power,
             "environment":       self.environment,
             "gcode_feed":        list(self.gcode_feed),
@@ -351,7 +517,9 @@ class SimulatedTelemetryWorker:
         self._print_count += 1
         self._state  = "printing"
         self._wp_idx = 0
+        self._wp_time_debt = 0.0
         self._ae     = 0.
+        vibration_monitor.reset_baseline()
 
         # Set temps INSTANTLY — no heating delay in sim
         self._ext.set_target(self._ext_target, instant=True)
@@ -368,11 +536,41 @@ class SimulatedTelemetryWorker:
         self.gcode_feed.append({"byte": 0, "text": f"M104 S{int(self._ext_target)} ; Extruder {int(self._ext_target)}°C (instant)"})
         self.gcode_feed.append({"byte": 0, "text": f"M140 S{int(self._bed_target)} ; Bed {int(self._bed_target)}°C (instant)"})
         self.gcode_feed.append({"byte": 0, "text": "G28 ; Home"})
-        print(f"🟢 Sim: print #{self._print_count} started ({self.shape}, "
+        self._print_start_time = time.time()
+        logging.info(f"🟢 Sim: print #{self._print_count} started ({self.shape}, "
               f"{len(self._waypoints)} waypoints, {WAYPOINTS_PER_TICK} WP/tick)")
+
+    def _get_exclude_payload(self):
+        if hasattr(self, "_cached_exclude_payload"):
+            return {"objects": self._cached_exclude_payload, "excluded_objects": list(self.excluded_objects)}
+
+        objects = []
+        import re, json
+        for line in self.gcode_str.split("\n"):
+            if line.startswith("EXCLUDE_OBJECT_DEFINE"):
+                name = re.search(r"NAME=([^ ]+)", line)
+                poly = re.search(r"POLYGON=(\[.*\])", line)
+                if name and poly:
+                    try:
+                        polygon = json.loads(poly.group(1))
+                        center = re.search(r"CENTER=([0-9.-]+,[0-9.-]+)", line)
+                        if center:
+                            cx, cy = map(float, center.group(1).split(","))
+                        else:
+                            cx = sum(p[0] for p in polygon) / len(polygon)
+                            cy = sum(p[1] for p in polygon) / len(polygon)
+                        objects.append({
+                            "name": name.group(1),
+                            "center": [cx, cy],
+                            "polygon": polygon
+                        })
+                    except: pass
+        self._cached_exclude_payload = objects
+        return {"objects": objects, "excluded_objects": list(self.excluded_objects)}
 
     def _finish_print(self):
         self._state = "cooling"
+        self._motion_velocity = 0.0
         self._ext.set_target(0); self._bed.set_target(0)
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         self.print_history.append({
@@ -383,14 +581,33 @@ class SimulatedTelemetryWorker:
         try:
             from db.models import get_connection
             conn = get_connection(); c = conn.cursor()
-            c.execute("INSERT INTO print_history (filename,status) VALUES (?,?)",
-                      (f"sim_{self.shape}.gcode", "completed"))
+            c.execute("INSERT INTO print_history (filename,status,print_time_seconds,filament_used_g,power_used_wh,cost_usd) VALUES (?,?,?,?,?,?)",
+                      (f"sim_{self.shape}.gcode", "completed", self._t, self._ext.pos * 3.0, 5.0, 0.5))
+            history_id = c.lastrowid
+            # Virtual Spool tracking
+            c.execute("SELECT id FROM spools WHERE is_active = 1 LIMIT 1")
+            spool = c.fetchone()
+            if spool:
+                # 3.0g per meter of extrusion used in sim
+                used_g = self._ext.pos * 3.0
+                c.execute("UPDATE spools SET used_weight_g = used_weight_g + ? WHERE id = ?", (used_g, spool[0]))
+
             conn.commit(); conn.close()
-        except: pass
+
+            from services.qa_reporter import trigger_qa_report
+            report_filename = f"qa_report_{history_id}_{int(time.time())}.pdf"
+            annotated_filename = f"annotated_gcode_{history_id}_{int(time.time())}.pdf"
+            self.print_history[-1]["report_path"] = report_filename
+            self.print_history[-1]["annotated_gcode_path"] = annotated_filename
+
+            # trigger_qa_report handles updating the DB for the QA report
+            trigger_qa_report(history_id, self._print_start_time, time.time(), f"sim_{self.shape}.gcode")
+        except Exception as e:
+            logging.error(f"Failed QA trigger: {e}")
         self.gcode_feed.append({"byte": 0, "text": f"; Print #{self._print_count} complete ✓"})
         self.gcode_feed.append({"byte": 0, "text": "M104 S0 ; Extruder off"})
         self.gcode_feed.append({"byte": 0, "text": "M140 S0 ; Bed off"})
-        print(f"✅ Sim: print #{self._print_count} complete")
+        logging.info(f"✅ Sim: print #{self._print_count} complete")
 
     # ── Waypoint advance ──────────────────────────────────────────────────────
     def _advance_waypoint(self):
@@ -405,6 +622,12 @@ class SimulatedTelemetryWorker:
             return
 
         wp = self._waypoints[self._wp_idx]
+        while wp.get("object") in self.excluded_objects:
+            self._wp_idx += 1
+            if self._wp_idx >= len(self._waypoints):
+                self._finish_print()
+                return
+            wp = self._waypoints[self._wp_idx]
 
         # In sim mode, teleport to waypoint position for speed
         # (the lerp in the frontend still gives smooth visual movement)
@@ -415,7 +638,10 @@ class SimulatedTelemetryWorker:
         if wp["extruding"]:
             prev_wp = self._waypoints[self._wp_idx - 1] if self._wp_idx > 0 else wp
             dist = math.sqrt((wp["x"] - prev_wp["x"])**2 + (wp["y"] - prev_wp["y"])**2)
-            self._ae += dist * 0.045
+            self._ae += dist * self._e_per_mm
+            self._tick_extruding_distance += dist
+            self._last_segment_distance = dist
+
 
         # Log every 50th waypoint in the terminal
         if self._wp_idx % 50 == 0:
@@ -436,7 +662,24 @@ class SimulatedTelemetryWorker:
 
     def _handle_cmd(self, cmd: str):
         self.gcode_feed.append({"byte": 0, "text": f">>> {cmd}"})
-        if cmd == "TEST":
+        if cmd == "M112":
+            self._state = "error"
+            self.fault = "Klipper reported: SHUTDOWN\nEmergency Stop Requested"
+            self._ext.set_target(0, instant=True)
+            self._bed.set_target(0, instant=True)
+            self.gcode_feed.append({"byte": 0, "text": "!!! M112 EMERGENCY STOP !!!"})
+            import logging
+            logging.info("💥 Sim: M112 Emergency Stop")
+        elif cmd == "RESTART" or cmd == "FIRMWARE_RESTART":
+            self._state = "idle"
+            self.fault = None
+            self._ext.set_target(0, instant=True)
+            self._bed.set_target(0, instant=True)
+            self._ax.pos = self._bed_cx; self._ax._target = self._bed_cx
+            self._ay.pos = self._bed_cy; self._ay._target = self._bed_cy
+            self._az.pos = 5.0;          self._az._target = 5.0
+            self.gcode_feed.append({"byte": 0, "text": f"; {cmd} completed"})
+        elif cmd == "TEST":
             self._state       = "test"
             self._test_wp     = list(self._TEST_WP)
             self._test_wp_idx = 0
@@ -482,6 +725,7 @@ class SimulatedTelemetryWorker:
     # ── Maintenance ───────────────────────────────────────────────────────────
     def _update_maintenance(self, kin, thm):
         hints  = []
+        status = []
         odo    = kin.get("odometry_m", {})
         stress = kin.get("stress_score", {})
         checks = {
@@ -494,10 +738,17 @@ class SimulatedTelemetryWorker:
             "stress_y":        stress.get("Y", 0),
         }
         for rule in MAINTENANCE_RULES:
-            if checks.get(rule["metric"], 0) >= rule["threshold"]:
+            val = checks.get(rule["metric"], 0)
+            status.append({
+                "metric": rule["metric"],
+                "value": val,
+                "threshold": rule["threshold"],
+                "msg": rule["msg"]
+            })
+            if val >= rule["threshold"]:
                 hints.append(rule["msg"])
         self.maintenance_hints = hints
-
+        self.maintenance_status = status
     # ── Faults ────────────────────────────────────────────────────────────────
     def _process_faults(self):
         for trigger_t, (name, param, dur) in self._fault_schedule.items():
@@ -507,7 +758,7 @@ class SimulatedTelemetryWorker:
                 self._active_faults[name] = self._t + dur
                 self._inject_fault(name, param)
                 self.gcode_feed.append({"byte": 0, "text": f"; ⚠️ FAULT: {name}"})
-                print(f"💥 Sim fault: {name} for {dur}s")
+                logging.info(f"💥 Sim fault: {name} for {dur}s")
         for name, recover_at in list(self._active_faults.items()):
             if self._t >= recover_at:
                 del self._active_faults[name]
@@ -526,4 +777,80 @@ class SimulatedTelemetryWorker:
 
 
 # Module-level singleton
-telemetry_worker = SimulatedTelemetryWorker()
+
+    def _parse_real_gcode(self, gcode_str: str):
+        """Parse G-code into waypoints with real durations.
+
+        Durations account for:
+        - Actual arc length (not chord) for G2/G3 moves
+        - A 2x firmware scaling factor: Klipper's acceleration planning,
+          pressure advance and look-ahead mean the real printer takes ~2x
+          longer than feedrate-only math predicts (measured: feedrate math
+          gives 58min, real file is 1h58m).
+        """
+        FIRMWARE_SCALE = 2.0
+        waypoints = []
+        byte = 0
+        x, y, z = 0.0, 0.0, 0.0
+        feedrate = 3000.0  # mm/min default
+        current_obj = None
+
+        import re, math
+        for line in gcode_str.split("\n"):
+            line_bytes = len((line + "\n").encode("utf-8"))
+            if line.startswith("EXCLUDE_OBJECT_START"):
+                if "NAME=" in line:
+                    current_obj = line.split("NAME=")[1].strip()
+            elif line.startswith("EXCLUDE_OBJECT_END"):
+                current_obj = None
+
+            is_arc  = line.startswith("G2 ") or line.startswith("G3 ")
+            is_move = is_arc or line.startswith("G1 ") or line.startswith("G0 ")
+            if is_move:
+                mx_ = re.search(r"X([0-9.-]+)", line)
+                my_ = re.search(r"Y([0-9.-]+)", line)
+                mz_ = re.search(r"Z([0-9.-]+)", line)
+                me_ = re.search(r"E([0-9.-]+)", line)
+                mf_ = re.search(r"F([0-9.-]+)", line)
+                mi_ = re.search(r"I([0-9.-]+)", line)
+                mj_ = re.search(r"J([0-9.-]+)", line)
+
+                if mf_:
+                    feedrate = float(mf_.group(1))
+
+                prev_x, prev_y, prev_z = x, y, z
+                changed = False
+                if mx_: x = float(mx_.group(1)); changed = True
+                if my_: y = float(my_.group(1)); changed = True
+                if mz_: z = float(mz_.group(1)); changed = True
+
+                if changed:
+                    if is_arc and mi_ and mj_:
+                        # Use true arc length, not chord length
+                        i = float(mi_.group(1)); j = float(mj_.group(1))
+                        cx, cy = prev_x + i, prev_y + j
+                        radius = math.sqrt(i*i + j*j)
+                        sa = math.atan2(prev_y - cy, prev_x - cx)
+                        ea = math.atan2(y - cy, x - cx)
+                        isCW = line.startswith("G2")
+                        if isCW and ea > sa: ea -= 2 * math.pi
+                        if not isCW and ea < sa: ea += 2 * math.pi
+                        dist = radius * abs(ea - sa)
+                    else:
+                        dist = math.sqrt((x - prev_x)**2 + (y - prev_y)**2 + (z - prev_z)**2)
+
+                    # duration = distance / feedrate * 60s, scaled for firmware overhead
+                    dur = (dist / feedrate * 60.0 * FIRMWARE_SCALE) if feedrate > 0 and dist > 0 else 0.0
+                    waypoints.append({
+                        "byte": byte,
+                        "x": x, "y": y, "z": z,
+                        "extruding": (me_ is not None),
+                        "object": current_obj,
+                        "duration": dur,
+                    })
+            byte += line_bytes
+
+        total = sum(w["duration"] for w in waypoints)
+        import logging
+        logging.info(f"📏 Sim G-code duration estimate: {total:.0f}s = {total/60:.1f}min")
+        return waypoints

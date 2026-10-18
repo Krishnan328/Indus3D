@@ -26,6 +26,7 @@ Handles:
     - Non-numeric values (skipped gracefully)
 """
 
+import logging
 import re
 import os
 import configparser
@@ -45,6 +46,13 @@ def _int(val: str, default: int) -> int:
     try:
         return int(float(val.split("#")[0].strip()))
     except (ValueError, AttributeError):
+        return default
+
+
+def _bool(val, default: bool) -> bool:
+    try:
+        return val.split("#")[0].strip().lower() in ("1", "true", "yes", "on")
+    except AttributeError:
         return default
 
 
@@ -210,8 +218,12 @@ def build_profile(cfg_path: str,
     printer_name = pr.get("name", "Klipper Printer").strip('"').strip("'")
 
     # ── Overrides ─────────────────────────────────────────────────────────────
-    mr_ip   = ov.get("moonraker_ip",   "100.88.38.105")
-    mr_port = _int(ov.get("moonraker_port", "7125"), 7125)
+    # Moonraker address comes from config/settings.py (.env) — the single
+    # source of truth — not from indus_overrides.cfg. This field is purely
+    # informational (shown in /api/profile and the debug summary); nothing
+    # routes requests off of it.
+    from config.settings import settings
+    mr_ip, mr_port = settings.MOONRAKER_HOST, settings.MOONRAKER_PORT
 
     profile = {
         "printer_name": printer_name,
@@ -269,6 +281,39 @@ def build_profile(cfg_path: str,
             "thermal_runaway_delta_c":  _float(ov.get("thermal_runaway_delta_c",  "15.0"), 15.0),
             "thermal_runaway_window_s": _float(ov.get("thermal_runaway_window_s", "5.0"),  5.0),
         },
+
+        "power": {
+            # Opt-in only — disabled unless explicitly turned on in
+            # indus_overrides.cfg. See docs/DEVELOPMENT.md before enabling:
+            # the target [power <device>] in moonraker.conf must NOT set
+            # locked_while_printing=True, or Moonraker will refuse the
+            # cutoff during the exact situation it exists for.
+            "cutoff_enabled": _bool(ov.get("power_cutoff_enabled", "false"), False),
+            "cutoff_device":  ov.get("power_cutoff_device", "").strip(),
+        },
+
+        "timelapse": {
+            "enabled":     _bool(ov.get("timelapse_enabled", "false"), False),
+            # "interval": snapshot every N seconds while printing — works
+            #   with any slicer, no gcode macros needed.
+            # "layer": snapshot on each Z increase >= layer_height_mm, using
+            #   Indus3D's own live Z tracking rather than slicer layer-change
+            #   macros — no gcode preprocessing required either way.
+            "mode":        (ov.get("timelapse_mode", "interval") or "interval").strip(),
+            "interval_s":  _float(ov.get("timelapse_interval_s", "10"), 10.0),
+            "fps":         _int(ov.get("timelapse_fps", "15"), 15),
+        },
+
+        "edge_inspection": {
+            # Opt-in vision-based failure detection — see backend/edge/ and
+            # docs/DEVELOPMENT.md. Disabled by default: this expects a
+            # separate companion device (not this Pi/mainboard) running
+            # edge/inspector.py or edge/watchdog.py and POSTing detections
+            # to /api/v1/edge/inspection-alert.
+            "enabled":       _bool(ov.get("edge_inspection_enabled", "false"), False),
+            "threshold_pct": _float(ov.get("edge_inspection_threshold_pct", "70"), 70.0),
+            "cooldown_s":    _float(ov.get("edge_inspection_cooldown_s", "120"), 120.0),
+        },
     }
 
     return profile
@@ -303,6 +348,6 @@ if __name__ == "__main__":
     cfg_path      = sys.argv[1] if len(sys.argv) > 1 else "printer.cfg"
     override_path = sys.argv[2] if len(sys.argv) > 2 else "indus_overrides.cfg"
     p = build_profile(cfg_path, override_path)
-    print(profile_summary(p))
+    logging.info(profile_summary(p))
     import json
-    print(json.dumps(p, indent=2))
+    logging.info(json.dumps(p, indent=2))
