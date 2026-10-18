@@ -8,7 +8,9 @@ Loads the printer profile in priority order:
   4. printer_profile.json fallback
 """
 
+import logging
 import os, json, tempfile, requests
+from config.settings import settings
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _OVERRIDES_PATH = os.path.join(_HERE, "indus_overrides.cfg")
@@ -23,14 +25,6 @@ _LOCAL_CFG_CANDIDATES = [
 ]
 
 _cache: dict = {}
-
-
-def _load_overrides_ip():
-    import configparser
-    cfg = configparser.ConfigParser(); cfg.optionxform = str
-    if os.path.isfile(_OVERRIDES_PATH): cfg.read(_OVERRIDES_PATH)
-    sec = dict(cfg["indus3d"]) if "indus3d" in cfg else {}
-    return sec.get("moonraker_ip", "100.88.38.105"), int(sec.get("moonraker_port", "7125"))
 
 
 def _fetch_cfg_from_moonraker(ip, port):
@@ -68,6 +62,17 @@ def _load_fallback_json():
     }
 
 
+def _merge_bed_safety(cache: dict) -> None:
+    """Overlay custom bed geometry / OrcaSlicer exclusion zones into *cache*."""
+    try:
+        from digital_twin.bed_safety import bed_safety
+        if "bed" not in cache:
+            cache["bed"] = {}
+        cache["bed"].update(bed_safety.to_dict())
+    except Exception as e:
+        logging.warning(f"Could not merge bed_safety into profile: {e}")
+
+
 def reload():
     global _cache
     from config.cfg_parser import build_profile, profile_summary
@@ -77,11 +82,12 @@ def reload():
     if sim_profile_path and os.path.isfile(sim_profile_path):
         _cache = build_profile(sim_profile_path, _OVERRIDES_PATH)
         _cache["_source"] = f"sim profile ({os.path.basename(sim_profile_path)})"
-        print(f"✅ Profile loaded from: {_cache['_source']}")
+        logging.info(f"✅ Profile loaded from: {_cache['_source']}")
+        _merge_bed_safety(_cache)
         _refresh_module_attrs()
         return _cache
 
-    mr_ip, mr_port = _load_overrides_ip()
+    mr_ip, mr_port = settings.MOONRAKER_HOST, settings.MOONRAKER_PORT
     cfg_text = _fetch_cfg_from_moonraker(mr_ip, mr_port)
     source   = "unknown"
 
@@ -104,7 +110,11 @@ def reload():
         _cache = _load_fallback_json()
 
     _cache["_source"] = source
-    print(f"✅ Profile loaded from: {source}")
+    logging.info(f"✅ Profile loaded from: {source}")
+
+    # Overlay custom bed geometry / OrcaSlicer exclusion zones if configured
+    _merge_bed_safety(_cache)
+
     _refresh_module_attrs()
     return _cache
 
@@ -119,8 +129,9 @@ def _refresh_module_attrs():
     m.bed_heater   = _cache.get("bed_heater", {})
     m.print_cfg    = _cache.get("print", {})
     m.alerts_cfg   = _cache.get("alerts", {})
-    mr = _cache.get("moonraker", {})
-    m.moonraker_url = f"http://{mr.get('ip','localhost')}:{mr.get('port',7125)}"
+    m.power_cfg    = _cache.get("power", {})
+    m.timelapse_cfg = _cache.get("timelapse", {})
+    m.moonraker_url = settings.moonraker_url
 
 
 def get_profile():    return _cache
@@ -130,9 +141,14 @@ def get_hotend():     return _cache.get("hotend", {})
 def get_bed_heater(): return _cache.get("bed_heater", {})
 def get_print_cfg():  return _cache.get("print", {})
 def get_alerts():     return _cache.get("alerts", {})
+def get_power_cfg():  return _cache.get("power", {})
+def get_timelapse_cfg(): return _cache.get("timelapse", {})
 def get_moonraker_url():
-    mr = _cache.get("moonraker", {})
-    return f"http://{mr.get('ip','localhost')}:{mr.get('port',7125)}"
+    # config/settings.py (.env-backed) is the single source of truth for
+    # the Moonraker address. This used to read a second, independent value
+    # out of indus_overrides.cfg — see CLAUDE_CONTEXT.md for why that was
+    # a live bug and not just duplication.
+    return settings.moonraker_url
 
 
 # Load on import
@@ -148,4 +164,94 @@ hotend = _cache.get("hotend", {})
 bed_heater = _cache.get("bed_heater", {})
 print_cfg = _cache.get("print", {})
 alerts_cfg = _cache.get("alerts", {})
+power_cfg = _cache.get("power", {})
+timelapse_cfg = _cache.get("timelapse", {})
 moonraker_url = get_moonraker_url()
+
+def get_edge_inspection_cfg(): return _cache.get("edge_inspection", {})
+
+def update_edge_inspection_cfg(overrides: dict) -> dict:
+    """Same targeted-line-replacement approach as update_timelapse_cfg —
+    preserves comments in indus_overrides.cfg instead of rewriting the
+    whole file with configparser."""
+    allowed = {
+        "edge_inspection_enabled":       lambda v: "true" if v else "false",
+        "edge_inspection_threshold_pct": lambda v: str(max(0.0, min(100.0, float(v)))),
+        "edge_inspection_cooldown_s":    lambda v: str(max(0.0, float(v))),
+    }
+    if not os.path.isfile(_OVERRIDES_PATH):
+        raise FileNotFoundError(_OVERRIDES_PATH)
+
+    to_set = {k: fmt(overrides[k]) for k, fmt in allowed.items() if k in overrides}
+    if not to_set:
+        return _cache
+
+    with open(_OVERRIDES_PATH, "r") as f:
+        lines = f.readlines()
+
+    seen = set()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in to_set:
+            lines[i] = f"{key} = {to_set[key]}\n"
+            seen.add(key)
+
+    missing = [k for k in to_set if k not in seen]
+    if missing:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        for k in missing:
+            lines.append(f"{k} = {to_set[k]}\n")
+
+    with open(_OVERRIDES_PATH, "w") as f:
+        f.writelines(lines)
+
+    return reload()
+
+def update_timelapse_cfg(overrides: dict) -> dict:
+    """Patch timelapse_* keys in indus_overrides.cfg on disk and reload the
+    in-memory profile so the change takes effect immediately (used by the
+    Settings > Timelapse tab). Uses targeted line replacement rather than
+    rewriting the whole file with configparser, since configparser would
+    silently strip every comment in the file — and this file is meant to be
+    hand-readable too."""
+    allowed = {
+        "timelapse_enabled":    lambda v: "true" if v else "false",
+        "timelapse_mode":       lambda v: "layer" if str(v).strip().lower() == "layer" else "interval",
+        "timelapse_interval_s": lambda v: str(max(1, int(float(v)))),
+        "timelapse_fps":        lambda v: str(max(1, int(float(v)))),
+    }
+    if not os.path.isfile(_OVERRIDES_PATH):
+        raise FileNotFoundError(_OVERRIDES_PATH)
+
+    to_set = {k: fmt(overrides[k]) for k, fmt in allowed.items() if k in overrides}
+    if not to_set:
+        return _cache
+
+    with open(_OVERRIDES_PATH, "r") as f:
+        lines = f.readlines()
+
+    seen = set()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in to_set:
+            lines[i] = f"{key} = {to_set[key]}\n"
+            seen.add(key)
+
+    missing = [k for k in to_set if k not in seen]
+    if missing:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        for k in missing:
+            lines.append(f"{k} = {to_set[k]}\n")
+
+    with open(_OVERRIDES_PATH, "w") as f:
+        f.writelines(lines)
+
+    return reload()

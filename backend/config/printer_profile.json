@@ -47,5 +47,15 @@
     "bed_heat_cycles_warn": 500,
     "thermal_runaway_delta_c": 15.0,
     "thermal_runaway_window_s": 5.0
+  },
+  "power": {
+    "cutoff_enabled": false,
+    "cutoff_device": ""
+  },
+  "timelapse": {
+    "enabled": false,
+    "mode": "interval",
+    "interval_s": 10,
+    "fps": 15
   }
 }
