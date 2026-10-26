@@ -3,7 +3,7 @@ digital_twin/quality_controller.py
 ------------------------------------
 Closed-loop print quality controller.
 
-Three independent control loops run every tick during active printing:
+Seven independent control loops run every tick during active printing:
 
 1. FLOW CONTROL (M221)
    Monitors flow_ratio from extrusion_model.
@@ -15,11 +15,32 @@ Three independent control loops run every tick during active printing:
    If the printer can't keep up with commanded position, reduces speed.
    Restores speed gradually as lag recovers.
 
-3. VARIABLE INPUT SHAPING (SET_INPUT_SHAPER)
+3. VARIABLE INPUT SHAPING (SET_INPUT_SHAPER) [mass-adaptive, TVIST model]
    Only for bed-slinger kinematics (cartesian).
    As filament accumulates mass on the bed, Y-axis resonance frequency
-   drops. Corrects in real time using:
-       f_new = f_baseline * sqrt(m_baseline / m_total)
+   drops. Corrects in real time using calc_mass_adaptive_shaper_frequency()
+   which tracks both frequency and damping ratio (zeta).
+
+4. DYNAMIC PARAMS (PA, Temp, Fan, Accel, SCV, Retraction, Z-offset)
+   Physics-based feedforward loop for pressure advance, thermal lag,
+   interlayer cooling, kinematic velocity, and firmware retraction.
+
+5. SINTERING / ADHESION CONTROL (M106 fan trim)
+   Monitors inter-filament healing degree D_h via Costa cooling model
+   + Gauss-Legendre diffusion integral (calc_sintering_healing_degree).
+   Reduces fan if D_h < 0.95 to improve weld strength.
+
+6. GRAETZ UNDERCOOLING CONTROL (M104 nozzle temp feedforward)
+   Computes thermal deficit at nozzle exit using Graetz number.
+   Adds ΔT feedforward to nozzle setpoint when Gz > 1.
+
+7. SURFACE ROUGHNESS CONTROL (M220 perimeter speed trim)
+   Estimates arithmetic Ra (µm) via kinematic scallop + empirical model.
+   Trims outer wall speed if Ra exceeds target_ra_um threshold.
+
+Additionally monitors:
+- Nozzle clog / filament stripping via TMC current ratio
+- Part warpage via ADXL Z-axis proxy → Z-hop correction
 
 All commands are rate-limited and clamped to safe ranges.
 All corrections are logged and exposed via .corrections dict.
@@ -48,6 +69,18 @@ SPEED_MIN_INTERVAL = 3.0  # Seconds between M220 commands
 
 SHAPER_INTERVAL = 30.0    # Seconds between SET_INPUT_SHAPER commands
 SHAPER_MIN_CHANGE = 0.5   # Hz change threshold before updating
+
+# ── Research model thresholds ─────────────────────────────────────────────────
+SINTERING_INTERVAL   = 10.0   # Seconds between adhesion/fan sintering checks
+GRAETZ_INTERVAL      = 5.0    # Seconds between Graetz undercooling temp checks
+ROUGHNESS_INTERVAL   = 15.0   # Seconds between surface Ra / perimeter speed checks
+WARPAGE_INTERVAL     = 5.0    # Seconds between warpage checks
+
+SINTERING_D_H_WARN   = 0.95   # D_h below this → trim fan to improve sintering
+SINTERING_FAN_TRIM   = 0.30   # Fraction of current fan to subtract (max 30%)
+GRAETZ_MAX_BOOST_C   = 10.0   # Max nozzle temp boost from Graetz undercooling
+WARPAGE_THRESHOLD_MM = 0.35   # Warpage above this → emit Z-hop
+ROUGHNESS_TARGET_UM  = 12.0   # Target surface roughness Ra in µm
 
 # ── Dynamic Control Models ──────────────────────────────────────────────────
 import digital_twin.control_models as control_models
@@ -84,6 +117,10 @@ class QualityController:
         self._last_speed_t  = 0.0
         self._last_shaper_t = 0.0
         self._last_dynamic_t = 0.0
+        self._last_sintering_t = 0.0
+        self._last_graetz_t  = 0.0
+        self._last_roughness_t = 0.0
+        self._last_warpage_t = 0.0
         self._temp_err_int = 0.0
         self._z_err_int = 0.0
         self._last_layer_z = 0.0
@@ -112,6 +149,14 @@ class QualityController:
             "scv": 5.0,
             "retraction": 1.0,
             "pressure": 0.0,
+            # ── Research-model metrics ──────────────────────────────────────
+            "adhesion_score":  1.0,    # D_h sintering healing degree (0–1)
+            "undercooling_c":  0.0,    # Graetz-driven nozzle exit ΔT (°C)
+            "warpage_mm":      0.0,    # Compliance observer warpage height (mm)
+            "nozzle_status":   "NORMAL",  # NORMAL | CLOG_WARNING | STRIPPING_WARNING
+            "ra_predicted_um": 0.0,    # Predicted surface roughness Ra (µm)
+            "zeta":            0.08,   # Damping ratio from TVIST shaper model
+            # ── System ─────────────────────────────────────────────────────
             "enabled":    self._auto_pilot,
         }
 
@@ -193,6 +238,26 @@ class QualityController:
         dynamic_cmds = self._dynamic_params(ext, snap, thm, kin, now)
         if dynamic_cmds:
             commands.extend(dynamic_cmds)
+
+        # ── 5. Sintering / Adhesion healing (M106 fan trim) ──────────────────
+        sintering_cmds = self._sintering_control(ext, snap, now)
+        if sintering_cmds:
+            commands.extend(sintering_cmds)
+
+        # ── 6. Graetz undercooling feedforward (M104 nozzle boost) ───────────
+        graetz_cmd = self._undercooling_control(ext, snap, now)
+        if graetz_cmd:
+            commands.append(graetz_cmd)
+
+        # ── 7. Surface roughness / perimeter speed trim (M220) ───────────────
+        roughness_cmd = self._roughness_control(ext, snap, now)
+        if roughness_cmd:
+            commands.append(roughness_cmd)
+
+        # ── 8. Warpage observer (Z-hop if threshold exceeded) ─────────────────
+        warpage_cmd = self._warpage_control(ext, snap, kin, now)
+        if warpage_cmd:
+            commands.append(warpage_cmd)
 
         return commands
 
@@ -281,7 +346,7 @@ class QualityController:
         self._log("speed", new_speed, reason)
         return f"M220 S{int(new_speed)}"
 
-    # ── Variable input shaping ────────────────────────────────────────────────
+    # ── Variable input shaping (TVIST mass-adaptive model) ───────────────────
     def _shaper_control(self, ext: dict, now: float):
         # Only for cartesian bed slingers
         if self._kinematics != "cartesian":
@@ -302,12 +367,17 @@ class QualityController:
         filament_vol    = filament_m * fil_area                         # mm³
         part_mass_g     = filament_vol * 1.24 / 1000                   # g (PLA density)
 
-        m_total = self._m_baseline_g + part_mass_g
-
-        # New Y resonance frequency
-        f_new = round(
-            self._f_baseline_y * math.sqrt(self._m_baseline_g / m_total), 2
+        # Use research model: calc_mass_adaptive_shaper_frequency (Paper 2.1.64)
+        # Tracks both frequency shift AND damping ratio (zeta) for TVIST
+        f_d_new, zeta_new, _delta2 = control_models.calc_mass_adaptive_shaper_frequency(
+            f_baseline_hz=self._f_baseline_y,
+            bed_mass_g=self._m_baseline_g,
+            part_mass_g=part_mass_g,
         )
+        f_new = round(f_d_new, 2)
+
+        # Update damping ratio in active metrics regardless of command threshold
+        self.active["zeta"] = round(zeta_new, 4)
 
         if abs(f_new - self.active["shaper_hz"]) < SHAPER_MIN_CHANGE:
             return None
@@ -317,8 +387,8 @@ class QualityController:
 
         reason = (
             f"part_mass={part_mass_g:.1f}g, "
-            f"m_total={m_total:.0f}g → "
-            f"f_Y: {self._f_baseline_y:.1f}→{f_new:.1f} Hz"
+            f"m_total={self._m_baseline_g + part_mass_g:.0f}g → "
+            f"f_Y: {self._f_baseline_y:.1f}→{f_new:.1f} Hz, ζ={zeta_new:.4f}"
         )
         self._log("shaper", f_new, reason)
         return f"SET_INPUT_SHAPER SHAPER_FREQ_Y={f_new} SHAPER_TYPE_Y={self._shaper_type_y}"
@@ -563,25 +633,259 @@ class QualityController:
             self._log("retraction", new_retract, f"q={q_current:.1f}, t={current_temp:.1f}")
 
         # 7. Feature 4: Predictive Acoustic Clog & Jam Detection
-        # If the theoretical pressure required to push the filament exceeds 100 units (arbitrary threshold for a standard stepper)
-        predicted_pressure = control_models.calc_extrusion_pressure(q_current, current_temp, t_base)
+        # Full non-Newtonian pipeline: ΔP → predicted I → compare to TMC current
+        # (Paper 2.1.27 — Tlegenov et al.)
+        delta_p = control_models.calc_non_newtonian_melt_pressure(
+            q_current_mm3_s=q_current,
+            current_temp_c=current_temp,
+            nozzle_dia_mm=nozzle_dia,
+        )
+        i_predicted = control_models.calc_extruder_motor_current(delta_p_pa=delta_p)
+        # TMC StallGuard proxy: read measured current from telemetry if available
+        i_measured = ext.get("tmc_extruder_current_a", i_predicted)
+        nozzle_status, current_ratio = control_models.detect_nozzle_clog_or_strip(
+            i_measured_a=i_measured,
+            i_predicted_a=i_predicted,
+        )
+        self.active["nozzle_status"] = nozzle_status
+        # Convert delta_p (Pa) to legacy pressure units (kPa) for display
+        predicted_pressure = delta_p / 1000.0
         self.active["pressure"] = round(predicted_pressure, 1)
-        if predicted_pressure > 100.0:
+
+        if nozzle_status == "CLOG_WARNING":
             import requests
             from config.settings import settings
             from core.alert_actions import _log_action, _flash_led_for_alert
             from core.notifications import notify
-            import time
+            import time as _time
             try:
                 requests.post(f"{settings.moonraker_url}/printer/print/pause", timeout=5)
-                description = f"Predictive Clog Detection: Volumetric flow ({q_current:.1f} mm³/s) is too high for current nozzle temp ({current_temp:.1f}°C). Extruder motor is likely grinding/clicking. Print paused to save part."
-                _log_action({"timestamp": time.time(), "alert_id": "clog_detection", "gcode": "PAUSE", "description": description, "status": "executed"})
+                description = (
+                    f"Nozzle clog detected: motor current ratio {current_ratio:.2f} "
+                    f"(measured={i_measured:.2f}A vs predicted={i_predicted:.2f}A). "
+                    f"Melt pressure={delta_p/1e6:.2f} MPa. Print paused."
+                )
+                _log_action({"timestamp": _time.time(), "alert_id": "clog_detection",
+                             "gcode": "PAUSE", "description": description, "status": "executed"})
                 notify(f"⚠️ Indus3D Quality: {description}")
                 _flash_led_for_alert("critical", restore_key="paused")
-            except Exception as e:
+            except Exception:
                 pass
 
         return commands
+
+    # ── Sintering / Adhesion healing control ──────────────────────────────────
+    def _sintering_control(self, ext: dict, snap: dict, now: float) -> list:
+        """
+        Trim fan PWM if inter-filament healing degree D_h < 0.95 (SINTERING_D_H_WARN).
+
+        Uses Costa's lumped-capacitance cooling model + 5-point Gauss-Legendre
+        diffusion integral (calc_sintering_healing_degree, Papers 2.1.69–71).
+        Up to 30% of the current fan command is subtracted when healing is incomplete.
+
+        Updates self.active["adhesion_score"].
+        Returns list of M106 commands if fan needs trimming, otherwise [].
+        """
+        if now - self._last_sintering_t < SINTERING_INTERVAL:
+            return []
+
+        q_current = ext.get("avg_flow_mm3_s", 0.0)
+        if not ext.get("is_extruding", False) or q_current < 0.5:
+            return []
+
+        hotend_temp  = float(snap.get("ext_temp", 220.0))
+        bed_temp     = float(snap.get("bed_temp", 60.0))
+        chamber_temp = float(snap.get("chamber_temp", 25.0))
+        fan_pwm      = int(self._fan_cmd if self._fan_cmd is not None else 128)
+        layer_height = float(ext.get("layer_height_mm", 0.2))
+        bead_width   = float(ext.get("line_width_mm",
+                             self._profile.get("line_width_mm", 0.45)))
+        t_glass      = float(self._profile.get("filament_t_glass_c", 60.0))
+        q_diff       = float(self._profile.get("filament_q_diffusion_j_mol", 220000.0))
+        actual_layer_time = float(self._profile.get("estimated_layer_time_s", 30.0))
+
+        _t_freeze, d_h, _strength = control_models.calc_sintering_healing_degree(
+            t_bead_initial_c=hotend_temp,
+            t_substrate_c=bed_temp,
+            t_ambient_c=chamber_temp,
+            actual_layer_time_s=actual_layer_time,
+            fan_pwm=fan_pwm,
+            bead_width_mm=bead_width,
+            layer_height_mm=layer_height,
+            t_glass_c=t_glass,
+            q_diffusion_j_mol=q_diff,
+        )
+
+        self.active["adhesion_score"] = round(d_h, 3)
+        self._last_sintering_t = now
+
+        commands = []
+        if d_h < SINTERING_D_H_WARN and fan_pwm > 10:
+            trim    = int(fan_pwm * SINTERING_FAN_TRIM)
+            new_fan = max(0, fan_pwm - trim)
+            if new_fan != self._fan_cmd:
+                self._fan_cmd = new_fan
+                self.active["fan"] = new_fan
+                commands.append(f"M106 S{new_fan}")
+                self._log(
+                    "sintering_fan",
+                    new_fan,
+                    f"D_h={d_h:.3f} < {SINTERING_D_H_WARN} → fan {fan_pwm}→{new_fan}"
+                )
+        return commands
+
+    # ── Graetz undercooling feedforward ───────────────────────────────────────
+    def _undercooling_control(self, ext: dict, snap: dict, now: float):
+        """
+        Feedforward nozzle temp boost to compensate Graetz-driven core undercooling.
+
+        When Gz > 1, advection outpaces conduction and the polymer core exits
+        the nozzle cooler than the block setpoint. The boost ΔT = k_gz * ln(Gz)
+        is added to the current temp command (Paper 2.1.26 — Perez et al., 2022).
+
+        Updates self.active["undercooling_c"].
+        Returns M104 command if boost > 1°C, otherwise None.
+        """
+        if now - self._last_graetz_t < GRAETZ_INTERVAL:
+            return None
+
+        q_current = ext.get("avg_flow_mm3_s", 0.0)
+        if not ext.get("is_extruding", False) or q_current < 0.5:
+            return None
+
+        thermal_diff = float(self._profile.get("thermal_diffusivity_mm2_s", 0.085))
+        melt_length  = float(self._profile.get("melt_length_mm", 15.5))
+        fil_dia      = float(ext.get("filament_dia_mm", 1.75))
+        t_base       = float(snap.get("ext_target", 220.0))
+        max_temp     = float(self._profile.get("max_temp_c", 280.0))
+
+        _gz, delta_t = control_models.calc_graetz_undercooling(
+            q_current_mm3_s=q_current,
+            filament_dia_mm=fil_dia,
+            melt_length_mm=melt_length,
+            thermal_diffusivity_mm2_s=thermal_diff,
+        )
+
+        boost = min(GRAETZ_MAX_BOOST_C, delta_t)
+        self.active["undercooling_c"] = round(delta_t, 2)
+        self._last_graetz_t = now
+
+        if boost < 1.0:
+            return None
+
+        # Merge with _temp_cmd set by _dynamic_params
+        current_cmd = self._temp_cmd if self._temp_cmd is not None else t_base
+        new_temp = round(min(max_temp - 5.0, current_cmd + boost), 1)
+
+        if abs(new_temp - current_cmd) < 0.5:
+            return None
+
+        self._temp_cmd = new_temp
+        self.active["temp"] = new_temp
+        self._log(
+            "graetz_temp",
+            new_temp,
+            f"Gz undercooling ΔT={delta_t:.2f}°C → boost +{boost:.1f}°C"
+        )
+        return f"M104 S{new_temp}"
+
+    # ── Surface roughness / perimeter speed control ───────────────────────────
+    def _roughness_control(self, ext: dict, snap: dict, now: float):
+        """
+        Trim outer wall speed when predicted Ra exceeds target_ra_um.
+
+        Uses kinematic scallop + empirical response surface (Paper 2.1.15
+        — Zhang et al., 2025). calc_optimal_perimeter_parameters finds the
+        minimum-time speed that achieves target Ra. The result is applied as
+        a global M220 speed override (same as speed-lag feedback).
+
+        Updates self.active["ra_predicted_um"].
+        Returns M220 command if speed trim ≥ 2%, otherwise None.
+        """
+        if now - self._last_roughness_t < ROUGHNESS_INTERVAL:
+            return None
+
+        layer_height = float(ext.get("layer_height_mm", 0.2))
+        wall_speed   = float(snap.get("velocity", 60.0))
+        current_temp = float(snap.get("ext_temp", 220.0))
+        target_ra    = float(self._profile.get("target_ra_um", ROUGHNESS_TARGET_UM))
+
+        ra = control_models.calc_surface_roughness_ra(
+            layer_height_mm=layer_height,
+            wall_speed_mm_s=wall_speed,
+            nozzle_temp_c=current_temp,
+        )
+        self.active["ra_predicted_um"] = round(ra, 2)
+        self._last_roughness_t = now
+
+        if ra <= target_ra:
+            return None
+
+        v_opt, _t_opt, _ra_opt = control_models.calc_optimal_perimeter_parameters(
+            layer_height_mm=layer_height,
+            target_ra_um=target_ra,
+            t_nominal_c=current_temp,
+            v_nominal_mm_s=wall_speed,
+        )
+
+        if wall_speed <= 0:
+            return None
+
+        speed_pct = round(max(float(SPEED_MIN), min(100.0, (v_opt / wall_speed) * 100.0)))
+        if abs(speed_pct - self._speed_cmd) < 2.0:
+            return None
+
+        self._speed_cmd = float(speed_pct)
+        self.active["speed_pct"] = int(speed_pct)
+        self._log(
+            "roughness_speed",
+            speed_pct,
+            f"Ra={ra:.2f}µm > {target_ra}µm → v_opt={v_opt:.1f}mm/s ({speed_pct}%)"
+        )
+        return f"M220 S{int(speed_pct)}"
+
+    # ── Warpage observer (Z-hop correction) ──────────────────────────────────
+    def _warpage_control(self, ext: dict, snap: dict, kin: dict, now: float):
+        """
+        Detects part warpage via ADXL345 Z-axis acceleration proxy and emits
+        a Z-hop babystep when warpage_mm exceeds WARPAGE_THRESHOLD_MM.
+
+        The DSP pipeline's normalised Z stress_score (0–1) is scaled to an
+        estimated F_z (assuming max ~20 N at stress=1.0). The compliance
+        observer calc_repulsive_force_warpage then reconstructs warpage height
+        (Paper 2.1.28 — Armillotta et al., 2022).
+
+        Updates self.active["warpage_mm"].
+        Returns Z-hop G-code string if warpage detected, otherwise None.
+        """
+        if now - self._last_warpage_t < WARPAGE_INTERVAL:
+            return None
+
+        stress_scores  = kin.get("stress_score", {})
+        z_stress       = float(stress_scores.get("Z", 0.0))
+        f_z_estimated  = z_stress * 20.0   # scale 0–1 → 0–20 N
+
+        nominal_lh = float(ext.get("layer_height_mm", 0.2))
+        warpage_mm, is_warning = control_models.calc_repulsive_force_warpage(
+            f_z_measured_n=f_z_estimated,
+            nominal_layer_height_mm=nominal_lh,
+            warpage_warning_threshold_mm=WARPAGE_THRESHOLD_MM,
+        )
+
+        self.active["warpage_mm"] = round(warpage_mm, 3)
+        self._last_warpage_t = now
+
+        if not is_warning:
+            return None
+
+        self._log(
+            "warpage_zhop",
+            warpage_mm,
+            f"Z_stress={z_stress:.2f} → F_z≈{f_z_estimated:.1f}N, "
+            f"warpage={warpage_mm:.3f}mm > {WARPAGE_THRESHOLD_MM}mm → Z-hop"
+        )
+        return "G91\nG1 Z0.3 F600\nG90"
+
 
 # Module-level singleton
 quality_controller = QualityController()

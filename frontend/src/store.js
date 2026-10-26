@@ -3,17 +3,10 @@ import { create } from "zustand";
 // Keep this build's API port in sync with backend/.env's FLASK_PORT. Vite
 // substitutes VITE_* values at build time, so restart the dev server or
 // rebuild after changing frontend/.env.
-// In production (served by Flask or Nginx), connect to the page's own origin
-// and port. In local Vite dev mode, connect to the backend on FLASK_PORT (default 5001).
-const isDev    = import.meta.env.DEV;
 const HOST     = window.location.hostname;
-const PROTO    = window.location.protocol === "https:" ? "https:" : "http:";
-const WS_PROTO = window.location.protocol === "https:" ? "wss:" : "ws:";
-let API_PORT   = isDev
-  ? (import.meta.env.VITE_API_PORT || "5001")
-  : (window.location.port || (window.location.protocol === "https:" ? "443" : "80"));
-let API        = isDev ? `http://${HOST}:${API_PORT}` : window.location.origin;
-let WS_URL     = isDev ? `ws://${HOST}:${API_PORT}/api/v1/ws/twin` : `${WS_PROTO}//${window.location.host}/api/v1/ws/twin`;
+let API_PORT = import.meta.env.VITE_API_PORT || "5001";
+let API      = `http://${HOST}:${API_PORT}`;
+let WS_URL   = `ws://${HOST}:${API_PORT}/api/v1/ws/twin`;
 
 let isHunting = false;
 const huntForApiPort = async () => {
@@ -125,6 +118,26 @@ function deriveAlerts(data) {
     for (const a of (vib.alerts || [])) {
       alerts.push({ id: a.id, level: a.level, msg: a.msg });
     }
+  }
+
+  // ── Quality controller research-driven alerts ─────────────────────────────
+  const q = data.quality || {};
+  const qa = q.active || {};
+
+  // Nozzle clog/strip alert
+  if (qa.nozzle_status === 'CLOG_WARNING') {
+    alerts.push({ id: 'clog_warning', level: 'warn', msg: 'Nozzle clog detected — predicted motor current elevated' });
+  }
+  if (qa.nozzle_status === 'STRIPPING_WARNING') {
+    alerts.push({ id: 'strip_warning', level: 'warn', msg: 'Filament stripping detected — motor current below expected' });
+  }
+  // Warpage alert
+  if ((qa.warpage_mm ?? 0) > 0.35) {
+    alerts.push({ id: 'warpage_warning', level: 'warn', msg: `Part warpage detected: ${qa.warpage_mm.toFixed(2)}mm — Z-hop correction issued` });
+  }
+  // Poor adhesion alert
+  if ((qa.adhesion_score ?? 1.0) < 0.70) {
+    alerts.push({ id: 'adhesion_warning', level: 'warn', msg: `Inter-layer adhesion score low (D_h=${qa.adhesion_score.toFixed(2)}) — fan reduced to improve sintering` });
   }
 
   return alerts;
@@ -332,6 +345,11 @@ export const useStore = create((set, get) => ({
       flow_pct: 100, speed_pct: 100, shaper_hz: 0, enabled: false,
       pa: 0.04, temp: 220, fan: 0, z_offset: 0.0, accel: 3000,
       velocity: 300, scv: 5.0, retraction: 1.0, pressure: 0.0,
+      adhesion_score: 1.0,
+      undercooling_c: 0.0,
+      warpage_mm: 0.0,
+      nozzle_status: "NORMAL",
+      ra_predicted_um: 0.0,
     },
     corrections: [],
   },

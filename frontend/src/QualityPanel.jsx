@@ -7,6 +7,8 @@
  *   3. Input shaper
  *   4. Pressure Advance, Temp, Fan, Z-Offset, Accel
  *   5. Velocity, SCV, Retraction, and Clog Pressure
+ *   6. Research-driven metrics: Adhesion (D_h), Undercooling, Warpage,
+ *      Nozzle Status, Surface Roughness Ra
  */
 
 import React from "react";
@@ -180,6 +182,64 @@ export function QualityPanel({ isDarkMode }) {
             value={active.shaper_hz}     min={10}  max={80} nominal={active.shaper_hz}
           />
         )}
+
+        {/* ── Research-driven quality metrics ── */}
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3 pt-1 border-t border-gray-700/40">
+          <BarGauge
+            label="Adhesion Score (D_h)" unit=""
+            value={active.adhesion_score} min={0.0} max={1.0} nominal={1.0}
+            invertColor={false}
+          />
+          <BarGauge
+            label="Undercooling (ΔT)" unit="°C"
+            value={active.undercooling_c} min={0.0} max={16.0} nominal={0.0}
+            invertColor={true}
+          />
+          <BarGauge
+            label="Warpage" unit="mm"
+            value={active.warpage_mm} min={0.0} max={1.0} nominal={0.0}
+            invertColor={true}
+          />
+          <BarGauge
+            label="Surface Ra" unit=" µm"
+            value={active.ra_predicted_um} min={0.0} max={30.0} nominal={0.0}
+            invertColor={true}
+          />
+        </div>
+
+        {/* Nozzle status badge — full width */}
+        <div className="flex flex-col gap-1">
+          <div className="flex justify-between text-[10px] font-mono opacity-60">
+            <span>Nozzle Status</span>
+            <span
+              className="font-bold px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider"
+              style={{
+                background:
+                  active.nozzle_status === 'NORMAL'           ? '#166534' :
+                  active.nozzle_status === 'CLOG_WARNING'     ? '#92400e' :
+                  active.nozzle_status === 'STRIPPING_WARNING' ? '#7f1d1d' : '#374151',
+                color:
+                  active.nozzle_status === 'NORMAL'           ? '#4ade80' :
+                  active.nozzle_status === 'CLOG_WARNING'     ? '#fbbf24' :
+                  active.nozzle_status === 'STRIPPING_WARNING' ? '#f87171' : '#9ca3af',
+              }}
+            >
+              {active.nozzle_status ?? 'NORMAL'}
+            </span>
+          </div>
+          <div className="w-full h-2 rounded-full bg-gray-200 dark:bg-gray-800">
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{
+                width: active.nozzle_status === 'NORMAL' ? '100%' : '50%',
+                background:
+                  active.nozzle_status === 'NORMAL'           ? '#22c55e' :
+                  active.nozzle_status === 'CLOG_WARNING'     ? '#f59e0b' :
+                  active.nozzle_status === 'STRIPPING_WARNING' ? '#ef4444' : '#6b7280',
+              }}
+            />
+          </div>
+        </div>
       </div>
 
       {/* Correction log */}
