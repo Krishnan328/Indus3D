@@ -58,7 +58,8 @@ SPEED_MIN       = 50      # M220 lower bound (%)
 SPEED_MAX       = 100     # M220 upper bound (%)
 
 # ── Control gains ─────────────────────────────────────────────────────────────
-FLOW_KP         = 8.0     # Proportional gain for flow correction
+FLOW_KP         = 0.5     # Gain: flow-ratio error → fractional flow trim (0.5 = 5% per 0.10 error)
+FLOW_MAX_STEP   = 5.0     # Max M221 change (percentage points) per correction
 FLOW_DEADBAND   = 0.04    # Flow ratio deadband (±4% = no action)
 FLOW_MIN_INTERVAL  = 8.0  # Seconds between M221 commands
 
@@ -101,6 +102,7 @@ class QualityController:
 
         # Current commanded values (track what we last sent)
         self._flow_cmd   = 100.0   # current M221 value
+        self._flow_trim  = 100.0   # feedback-only flow trim (before curve factor)
         self._speed_cmd  = 100.0   # current M220 value
 
         self._pa_cmd       = None
@@ -203,6 +205,7 @@ class QualityController:
         if snap.get("print_state") != "printing":
             # Reset commanded values when not printing
             self._flow_cmd  = 100.0
+            self._flow_trim = 100.0
             self._speed_cmd = 100.0
             return []
 
@@ -293,11 +296,14 @@ class QualityController:
             theta=curvature_theta
         )
 
-        base_target = self._flow_cmd + correction
-        adjusted_target = base_target * curve_multiplier
-
+        # Integrate the feedback trim on its own, then apply the curve factor
+        # to the commanded value only. Multiplying the stored command (as
+        # before) compounded cos(theta) on every correction and ratcheted
+        # flow down on curves.
+        correction = max(-FLOW_MAX_STEP, min(FLOW_MAX_STEP, correction))
+        self._flow_trim = max(FLOW_MIN, min(FLOW_MAX, self._flow_trim + correction))
         new_flow = round(
-            max(FLOW_MIN, min(FLOW_MAX, adjusted_target)), 1
+            max(FLOW_MIN, min(FLOW_MAX, self._flow_trim * curve_multiplier)), 1
         )
 
         if abs(new_flow - self._flow_cmd) < 0.5:
@@ -641,12 +647,20 @@ class QualityController:
             nozzle_dia_mm=nozzle_dia,
         )
         i_predicted = control_models.calc_extruder_motor_current(delta_p_pa=delta_p)
-        # TMC StallGuard proxy: read measured current from telemetry if available
-        i_measured = ext.get("tmc_extruder_current_a", i_predicted)
-        nozzle_status, current_ratio = control_models.detect_nozzle_clog_or_strip(
-            i_measured_a=i_measured,
-            i_predicted_a=i_predicted,
-        )
+        # Measured extruder current. No component currently populates this key
+        # (the telemetry worker does not read TMC data), so only run the
+        # comparison when a real measurement exists. Defaulting to the
+        # prediction made the ratio always 1.0 — a detector that looked active
+        # but could never fire.
+        i_measured = ext.get("tmc_extruder_current_a")
+        if i_measured is None:
+            nozzle_status, current_ratio = "NORMAL", 1.0
+            i_measured = i_predicted
+        else:
+            nozzle_status, current_ratio = control_models.detect_nozzle_clog_or_strip(
+                i_measured_a=i_measured,
+                i_predicted_a=i_predicted,
+            )
         self.active["nozzle_status"] = nozzle_status
         # Convert delta_p (Pa) to legacy pressure units (kPa) for display
         predicted_pressure = delta_p / 1000.0

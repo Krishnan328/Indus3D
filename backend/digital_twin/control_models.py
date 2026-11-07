@@ -340,50 +340,6 @@ def calc_sound_pressure(h_transfer: list[float], f_force: list[float]) -> float:
         raise ValueError("Transfer functions and forces arrays must have the same length.")
     
     return sum(h * f for h, f in zip(h_transfer, f_force))
-import math
-from typing import List
-
-# Standard DC/Stepper drive placeholder matrices for Extruder State Space Model
-# State x = [i, omega]^T where i is motor current, omega is angular velocity
-# Input u = [V]^T where V is applied voltage
-
-# Continuous-Time Matrices (dot{x} = A x + B u)
-# Derived from generic motor parameters:
-# R = 2.0 Ohms, L = 0.003 H, k_e = 0.05 V/(rad/s), k_t = 0.05 Nm/A, J = 5e-6 kg*m^2, b = 1e-4 Nm/(rad/s)
-A_CONT = [
-    [-666.67, -16.67],
-    [10000.0, -20.0]
-]
-
-B_CONT = [
-    [333.33],
-    [0.0]
-]
-
-def calc_continuous_extruder_state_derivative(x: List[float], u: List[float], A: List[List[float]] = A_CONT, B: List[List[float]] = B_CONT) -> List[float]:
-    """
-    Continuous-Time Extruder State Equation: dot{x} = A x + B u.
-    Returns the state derivative dot{x}.
-    x: [current (A), angular_velocity (rad/s)]
-    u: [voltage (V)]
-    """
-    if len(x) != 2 or len(u) != 1:
-        raise ValueError("State vector must have 2 elements and input vector must have 1 element.")
-        
-    dot_x_0 = A[0][0] * x[0] + A[0][1] * x[1] + B[0][0] * u[0]
-    dot_x_1 = A[1][0] * x[0] + A[1][1] * x[1] + B[1][0] * u[0]
-    
-    return [dot_x_0, dot_x_1]
-
-# Discrete-Time Matrices (x(k+1) = A_e x(k) + B_e u(k))
-# Approximated with Forward Euler and Ts = 0.001 s (1 ms)
-# A_e ≈ I + A * Ts
-# B_e ≈ B * Ts
-A_DISC = [
-    [0.33333, -0.01667],
-    [10.0, 0.98]
-]
-
 # ── Group G: Dynamic Firmware Retraction (Ooze Compensation) ─────────────
 
 def calc_dynamic_retraction(current_temp: float, base_temp: float, q_current: float, base_retract: float = 1.0, k_t: float = 0.015, k_q: float = 0.05) -> float:
@@ -618,7 +574,10 @@ def calc_sintering_healing_degree(
         t_tau = (t_bead_initial_c - q_inf) * math.exp(-m_decay * tau) + q_inf
         t_tau_k = max(273.15, t_tau + 273.15)
         # Relaxation welding time t_w(T)
-        tw = a_weld_s * math.exp(min(60.0, q_diffusion_j_mol / (r_gas * t_tau_k)))
+        # The cap only guards against float overflow (exp(700) ~ 1e304). It must
+        # stay far above any physical exponent: a low cap (the old 60) made the
+        # welding time stop growing below ~168 degC and overstated healing.
+        tw = a_weld_s * math.exp(min(600.0, q_diffusion_j_mol / (r_gas * t_tau_k)))
         if tw > 1e-12:
             integral_sum += wi * (1.0 / tw)
 
@@ -748,10 +707,10 @@ def calc_surface_roughness_ra(
     combining kinematic scallop geometry with the empirical response surface.
     """
     rad = math.radians(min(80.0, abs(surface_angle_deg)))
-    if rad > 0.001:
-        ra_kinematic = (layer_height_mm / (4.0 * math.cos(rad))) * 1000.0  # to µm
-    else:
-        ra_kinematic = (0.0537 * layer_height_mm) * 1000.0  # ~10.7 µm for 0.2mm layer
+    # Flat-wall baseline (~10.7 µm for a 0.2 mm layer), scaled by the scallop
+    # stretch 1/cos(angle). Continuous in the angle: the old code switched to
+    # h/(4cos) for any non-zero angle, a ~5x discontinuity at ~0.06 degrees.
+    ra_kinematic = (0.0537 * layer_height_mm) * 1000.0 / math.cos(rad)  # to µm
 
     speed_factor = 1.0 + 0.008 * max(0.0, wall_speed_mm_s - 40.0)
     temp_factor = 1.0 - 0.005 * (nozzle_temp_c - 200.0)

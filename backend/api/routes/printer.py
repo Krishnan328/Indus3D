@@ -128,10 +128,16 @@ def get_gcode_file(filename: str):
     Large files are streamed without buffering the full content in Flask.
     """
     # Sim mode: serve from simulator instead of Moonraker
-    if filename.startswith("sim_"):
-        import workers
-        w = workers._active_worker
-        if w and hasattr(w, "gcode_str") and w.gcode_str:
+    if ".." in filename.split("/"):
+        return jsonify({"error": "invalid filename"}), 400
+
+    import workers
+    w = workers._active_worker
+    # Only treat sim_* as simulator output when the simulator is actually
+    # running; on a live printer a real file named sim_*.gcode is served
+    # from Moonraker like any other.
+    if filename.startswith("sim_") and w is not None and hasattr(w, "gcode_str"):
+        if w.gcode_str:
             return Response(
                 w.gcode_str,
                 mimetype="text/plain",
@@ -190,7 +196,7 @@ def gcode_metadata():
 
 @printer_bp.route("/files/gcodes/<path:filename>", methods=["DELETE"])
 def delete_gcode_file(filename: str):
-    if ".." in filename:
+    if ".." in filename.split("/"):
         return jsonify({"error": "invalid filename"}), 400
     try:
         res = requests.delete(
@@ -218,6 +224,8 @@ def list_config_files():
 
 @printer_bp.route("/config/<path:filename>", methods=["GET"])
 def get_config_file(filename: str):
+    if ".." in filename.split("/"):
+        return jsonify({"error": "invalid filename"}), 400
     try:
         res = requests.get(
             _mr(f"/server/files/config/{filename}"),
@@ -234,6 +242,9 @@ def save_config_file(filename: str):
     import difflib, time, json
     from db.models import get_connection
 
+    if ".." in filename.split("/"):
+        return jsonify({"error": "invalid filename"}), 400
+
     # Handle FormData file upload correctly
     if 'file' in request.files:
         file_obj = request.files['file']
@@ -246,12 +257,15 @@ def save_config_file(filename: str):
     try:
         old_res = requests.get(_mr(f"/server/files/config/{filename}"), timeout=3)
         old_content = old_res.text if old_res.ok else ""
-    except:
+    except requests.RequestException:
         old_content = ""
 
     diff = "\n".join(difflib.unified_diff(
+        old_content.splitlines(),
+        new_content.splitlines(),
         fromfile=f"old_{filename}",
-        tofile=f"new_{filename}"
+        tofile=f"new_{filename}",
+        lineterm="",
     ))
 
     try:
@@ -292,6 +306,8 @@ _SAFE_PREFIXES = {
     "G0", "G1", "G2", "G3", "G4", "G28", "G29", "G90", "G91", "G92",
     # Firmware retraction (G10=retract, G11=recover)
     "G10", "G11",
+    # Unit / extrusion-mode selection (harmless, used by sliced preambles)
+    "G21", "M82", "M83",
     # Temperature
     "M104", "M105", "M106", "M107", "M109",
     "M140", "M190",
@@ -324,8 +340,33 @@ _SAFE_PREFIXES = {
 }
 
 def _is_safe_gcode(cmd: str) -> bool:
-    upper = cmd.strip().upper()
-    return any(upper.startswith(p) for p in _SAFE_PREFIXES)
+    """True only if EVERY line of the script starts with an allowed command.
+
+    Moonraker/Klipper execute all lines of a script, so checking just the
+    beginning of the string would let "G90\\n<anything>" through. Each command
+    is matched as a whole token (not a bare prefix), so "M1" or "G1" no longer
+    admit M1xx / G1x codes that are not on the list.
+    """
+    if not isinstance(cmd, str) or "\x00" in cmd:
+        return False
+    lines = [ln.strip() for ln in cmd.replace("\r", "\n").split("\n")]
+    lines = [ln for ln in lines if ln and not ln.startswith(";")]
+    if not lines:
+        return False
+    for line in lines:
+        token = line.split(None, 1)[0].upper()
+        # Allow Klipper-style "M104.5"-free tokens and "G1X10" is rejected on
+        # purpose: a token must be exactly a listed command.
+        if token not in _SAFE_PREFIXES:
+            return False
+    return True
+
+
+def _printer_is_busy() -> bool:
+    import workers
+    w = workers._active_worker
+    state = (w.latest if w else {}).get("print_state", "standby")
+    return state in ("printing", "paused")
 
 
 @printer_bp.route("/gcode", methods=["POST"])
@@ -452,6 +493,8 @@ def _flash_led_state(state_key: str):
 
 @printer_bp.route("/home", methods=["POST"])
 def home_axes():
+    if _printer_is_busy():
+        return jsonify({"error": "Cannot home while a print is active"}), 409
     data = request.get_json(silent=True) or {}
     axes = (data.get("axes") or "").strip().upper()
     if axes and not set(axes) <= set("XYZ"):
@@ -584,7 +627,7 @@ def power_cutoff_config():
 @printer_bp.route("/macros", methods=["GET"])
 def get_macros():
     try:
-        res = req.get(f"{settings.moonraker_url}/printer/objects/list", timeout=5)
+        res = requests.get(f"{settings.moonraker_url}/printer/objects/list", timeout=5)
         if not res.ok:
             return jsonify({"error": "Failed to fetch from Moonraker"}), 502
         data = res.json().get("result", {}).get("objects", [])
