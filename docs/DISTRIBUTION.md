@@ -12,13 +12,17 @@ Indus3D provides two official distribution channels tailored to different host o
 For standard Raspberry Pi or Debian SBC setups where Klipper was installed via KIAUH:
 
 ### Option A: Install via KIAUH Extension (Recommended for KIAUH Users)
-Register the extension from a local checkout of the public preview branch:
+Register the extension from a local clone:
 
 ```bash
-git clone --branch codex/packaging-fixes https://github.com/Krishnan328/Indus3D.git ~/indus3d
+git clone https://github.com/Krishnan328/Indus3D.git ~/indus3d
 cd ~/indus3d
 bash integrations/kiauh/install-extension.sh
 ```
+
+> [!TIP]
+> To target an internal development repository, pass:
+> `INDUS3D_REPO_URL=https://github.com/your-fork/Indus3D.git ./install.sh`
 
 Once linked:
 1. Launch KIAUH:
@@ -59,7 +63,7 @@ Indus3D update-manager section and exact Klipper include line.
 If you do not use KIAUH, install Indus3D directly:
 
 ```bash
-git clone --branch codex/packaging-fixes https://github.com/Krishnan328/Indus3D.git ~/indus3d
+git clone https://github.com/Krishnan328/Indus3D.git ~/indus3d
 cd ~/indus3d
 ./install.sh
 ```
@@ -89,7 +93,7 @@ Add Indus3D to your host flake inputs:
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    indus3d.url = "github:Krishnan328/Indus3D?ref=codex/packaging-fixes";
+    indus3d.url = "github:Krishnan328/Indus3D";
   };
 
   outputs = { self, nixpkgs, indus3d, ... }: {

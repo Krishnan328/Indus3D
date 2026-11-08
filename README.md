@@ -39,11 +39,15 @@ Indus3D is an open-source, real-time digital twin and closed-loop quality contro
 - **Custom 3D Bed Models (STL)**: Upload, render, and inspect custom physical build plate geometries in Three.js with realistic metal/texture shading.
 - **Collision Guardrails**: Forbids downward Z corrections near or over bed screws and clips below clearance altitude ($Z < 10\text{ mm}$). Clamps total Z adjustments strictly within `[-0.25mm, +0.50mm]`.
 
-### 5. Modern Dashboard & Visualizer
-- **Interactive 3D Viewport**: WebGL/Three.js digital twin rendering live nozzle coordinates, extruder path contours, and physical exclusion zones.
+### 5. Modern Dashboard, 3D Object Exclusion & Automation
+- **Interactive 3D Viewport & Object Cancellation**: WebGL/Three.js digital twin rendering live nozzle coordinates, extruder path contours, and individual printed object bounding boxes. Operators can click any individual object in 3D or open the floating Objects HUD drawer to cancel defective parts mid-print (`EXCLUDE_OBJECT`) while the rest of the print finishes safely.
+- **KAMP (Klipper Adaptive Meshing & Purging)**: Intercepts mesh calibration and line purging, restricting bed probing strictly to the sliced footprint. Dramatically cuts pre-flight calibration time and mechanical wear.
+- **Sensor-Aware Pre-Flight PRINT_START & PRINT_END**: Fully parametric pre-flight sequencing supporting chamber heat-soak, dual-stage 150°C pre-heating, automatic brush wiping (`NOZZLE_WIPE`), and smart parking (`SMART_PARK`).
+- **Automated Git Configuration Backup**: Tracks all changes in `/var/lib/moonraker/config/` automatically in git, with REST APIs for history, visual diffs, and one-click rollback.
 - **Full Klipper Controls**: Mainsail-style toolhead jogging, temperature gauges, extrusion controls, emergency stop, and interactive G-code terminal with live `[QC]` feedback tagging.
 - **Touch UI Mode**: Tailored for 5" and 7" Raspberry Pi touchscreen displays.
-- **Sensor Telemetry**: PZEM-004T AC power metering, Spoolman active spool tracking, and multi-channel webhook notifications (Discord/Telegram).
+- **Rich Sensor Telemetry & Webhooks**: PZEM-004T AC power metering with Wh/cost reporting, Spoolman active spool tracking, and multi-channel rich Discord embeds & Telegram notifications with attached live webcam snapshots.
+- **Cryptographic Visual QA Audit & Timelapse**: Automatically stitches timelapses, preserves keyframe thumbnails, computes immutable SHA-256 video hashes, and embeds visual audit records into AS9100 Certificates of Conformance.
 
 ### 6. Edge Computer Vision & Failure Detection (`backend/edge`)
 - **Zero-Dataset Motion Watchdog (`edge/watchdog.py`)**: Real-time OpenCV MOG2 background subtraction detecting detached prints or moving spaghetti masses without requiring any machine learning model or dataset.
@@ -94,17 +98,20 @@ Indus3D supports two official installation targets depending on your operating s
 ### 1. Debian / Raspberry Pi OS / Ubuntu
 
 #### Option A: KIAUH Extension (Recommended for standard Klipper setups)
-Register the extension from this preview branch:
 ```bash
-git clone --branch codex/packaging-fixes https://github.com/Krishnan328/Indus3D.git ~/indus3d
+git clone https://github.com/Krishnan328/Indus3D.git ~/indus3d
 cd ~/indus3d
 bash integrations/kiauh/install-extension.sh
 ```
 Then run `./kiauh/kiauh.sh`, navigate to **`[E]xtensions`**, and choose **`Indus3D`** -> **`[1] Install`**.
 
+> [!TIP]
+> To install from an internal or development fork, prefix the command with:
+> `INDUS3D_REPO_URL=https://github.com/your-fork/Indus3D.git ./install.sh`
+
 #### Option B: Standalone Debian Installer
 ```bash
-git clone --branch codex/packaging-fixes https://github.com/Krishnan328/Indus3D.git ~/indus3d
+git clone https://github.com/Krishnan328/Indus3D.git ~/indus3d
 cd ~/indus3d
 ./install.sh
 ```
@@ -121,7 +128,7 @@ For NixOS hosts (such as `nixos-ks`), Indus3D provides a native Nix Flake and sa
 
 ```nix
 # In your host flake inputs:
-inputs.indus3d.url = "github:Krishnan328/Indus3D?ref=codex/packaging-fixes";
+inputs.indus3d.url = "github:Krishnan328/Indus3D";
 
 # In your NixOS configuration modules:
 modules = [

@@ -102,6 +102,20 @@ replace them with measured limits once enough stable runs exist.
 
 ## Data and safety notes
 
+For an already-running print, `observe_print.py` can index a growing telemetry
+capture into a separate SQLite database and sample service accounting every
+10 seconds. It reads no printer APIs and does not modify the production DB:
+
+```bash
+python3 observe_print.py runs/current.jsonl --database runs/current.sqlite
+python3 summarize_observation.py runs/current.sqlite --output reports/current.json
+```
+
+The observer stops two minutes after an observed printing/paused state changes
+to a terminal state, or after its bounded duration (30 minutes by default).
+The separate telemetry producer remains bounded by its own duration. Reports
+flag absent accelerometer streaming and suspicious zero-power readings.
+
 - Captures can include printer status, file names, and temperatures. Keep them
   outside the public repository unless you intentionally want to share them.
 - Failed HTTP samples are recorded as errors and the capture continues. This

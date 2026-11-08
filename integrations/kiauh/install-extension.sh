@@ -4,12 +4,15 @@
 # Registers the Indus3D extension directly into your local KIAUH installation.
 #
 # Usage:
-#   bash integrations/kiauh/install-extension.sh
+#   curl -fsSL https://raw.githubusercontent.com/Krishnan328/Indus3D/main/integrations/kiauh/install-extension.sh | bash
 # Or with custom path:
 #   curl -fsSL ... | bash -s -- /custom/path/to/kiauh
 # ==============================================================================
 
 set -euo pipefail
+
+REPO_URL="${INDUS3D_REPO_URL:-https://github.com/Krishnan328/Indus3D.git}"
+REPO_BRANCH="${INDUS3D_REPO_BRANCH:-main}"
 
 GREEN="\033[0;32m"
 YELLOW="\033[1;33m"
@@ -48,7 +51,7 @@ if [ -z "${KIAUH_DIR}" ]; then
     echo -e "  bash install-extension.sh /path/to/your/kiauh"
     echo ""
     echo -e "${CYAN}Alternatively, you can install Indus3D directly without KIAUH using:${NC}"
-    echo -e "  git clone --branch codex/packaging-fixes https://github.com/Krishnan328/Indus3D.git ~/indus3d && cd ~/indus3d && ./install.sh"
+    echo -e "  git clone ${REPO_URL} ~/indus3d && cd ~/indus3d && ./install.sh"
     exit 1
 fi
 
@@ -57,8 +60,8 @@ echo -e "${CYAN}🚀 Registering Indus3D Extension in KIAUH at: ${EXT_DIR}${NC}"
 
 mkdir -p "${EXT_DIR}"
 
-# Copy matching scripts from the checked-out preview, rather than mixing
-# extension code downloaded separately from a different branch.
+# Run from an authenticated clone: raw.githubusercontent.com downloads cannot
+# access this private repository using the user's Git credentials.
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for name in metadata.json extension.py indus3d_installer.sh config_file.py; do
     if [ ! -f "${SOURCE_DIR}/${name}" ]; then

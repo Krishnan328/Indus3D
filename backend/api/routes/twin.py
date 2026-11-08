@@ -263,9 +263,11 @@ def get_lifetime_stats():
 @twin_bp.route("/exclude_object", methods=["POST"])
 def exclude_object():
     obj_name = request.json.get("name")
+    reason = request.json.get("reason", "Operator exclusion via Digital Twin")
     if not obj_name:
         return jsonify({"error": "name required"}), 400
     try:
+        from core.notifications import notify_object_excluded
         from api.server import _worker
         w = _worker()
         if w and type(w).__name__ == "SimulatedTelemetryWorker":
@@ -275,11 +277,13 @@ def exclude_object():
                     w.excluded_objects.remove(obj_name)
                 else:
                     w.excluded_objects.add(obj_name)
+            notify_object_excluded(obj_name, reason=reason)
             return jsonify({"success": True, "sim": True})
 
         from services.moonraker_client import MoonrakerClient
         m = MoonrakerClient()
         res = m.send_gcode(f"EXCLUDE_OBJECT NAME={obj_name}")
+        notify_object_excluded(obj_name, reason=reason)
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

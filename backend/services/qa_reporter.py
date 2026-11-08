@@ -60,13 +60,20 @@ def _generate_report_task(history_id: int, start_ts: float, end_ts: float, filen
         dim_y = max_y - min_y
         dim_z = max_z
         
-        c.execute("SELECT measured_x, measured_y, measured_z, work_order_id, operator_name FROM print_history WHERE id = ?", (history_id,))
+        c.execute("""
+            SELECT measured_x, measured_y, measured_z, work_order_id, operator_name,
+                   timelapse_id, timelapse_path, timelapse_hash
+            FROM print_history WHERE id = ?
+        """, (history_id,))
         hist_row = c.fetchone()
         meas_x = hist_row[0] if hist_row and hist_row[0] is not None else "N/A"
         meas_y = hist_row[1] if hist_row and hist_row[1] is not None else "N/A"
         meas_z = hist_row[2] if hist_row and hist_row[2] is not None else "N/A"
         work_order = hist_row[3] if hist_row and hist_row[3] else "N/A"
         operator = hist_row[4] if hist_row and hist_row[4] else "N/A"
+        timelapse_id = hist_row[5] if hist_row and len(hist_row) > 5 and hist_row[5] else None
+        timelapse_path = hist_row[6] if hist_row and len(hist_row) > 6 and hist_row[6] else None
+        timelapse_hash = hist_row[7] if hist_row and len(hist_row) > 7 and hist_row[7] else "N/A"
         
         # Get active spool details for AS9100 Certificate
         c.execute("SELECT name, material, lot_number, manufacturer, material_grade FROM spools WHERE is_active = 1 LIMIT 1")
@@ -162,13 +169,49 @@ def _generate_report_task(history_id: int, start_ts: float, end_ts: float, filen
                 f"--- CRYPTOGRAPHIC AUDIT TRAIL ---\n"
                 f"Telemetry SHA-256 Hash:\n"
                 f"{telemetry_hash}\n"
-                f"(Verify against secure Indus3D database records)\n"
+                f"(Verify against secure Indus3D database records)\n\n"
+                f"--- VISUAL TRACEABILITY & TIMELAPSE ---\n"
+                f"Timelapse Session: {timelapse_id or 'N/A'}\n"
+                f"Video SHA-256 Hash:\n"
+                f"{timelapse_hash or 'N/A'}\n"
             )
             
-            fig.text(0.1, 0.85, coc_text, fontsize=11, family='monospace', verticalalignment='top')
+            fig.text(0.1, 0.88, coc_text, fontsize=10, family='monospace', verticalalignment='top')
             
             pdf.savefig(fig)
             plt.close(fig)
+
+            # 4. Optional Visual Keyframes Page (if timelapse frames exist)
+            if timelapse_path:
+                job_dir = os.path.dirname(timelapse_path)
+                k_first = os.path.join(job_dir, "keyframe_first.jpg")
+                k_last = os.path.join(job_dir, "keyframe_last.jpg")
+                if os.path.isfile(k_first) or os.path.isfile(k_last):
+                    try:
+                        import matplotlib.image as mpimg
+                        fig_v, axes = plt.subplots(1, 2, figsize=(10, 5))
+                        fig_v.suptitle(f"Visual In-Process Audit Keyframes - Job {history_id}", fontsize=14)
+                        
+                        if os.path.isfile(k_first):
+                            axes[0].imshow(mpimg.imread(k_first))
+                            axes[0].set_title("First Layer / Initial Phase")
+                            axes[0].axis('off')
+                        else:
+                            axes[0].text(0.5, 0.5, "Initial frame unavailable", ha='center')
+                            axes[0].axis('off')
+                            
+                        if os.path.isfile(k_last):
+                            axes[1].imshow(mpimg.imread(k_last))
+                            axes[1].set_title("Final Layer / Completion Phase")
+                            axes[1].axis('off')
+                        else:
+                            axes[1].text(0.5, 0.5, "Final frame unavailable", ha='center')
+                            axes[1].axis('off')
+
+                        pdf.savefig(fig_v)
+                        plt.close(fig_v)
+                    except Exception as ve:
+                        logging.warning(f"Could not render visual audit keyframes: {ve}")
             
         # Update print history
         c.execute("UPDATE print_history SET report_path = ? WHERE id = ?", (report_filename, history_id))

@@ -590,13 +590,29 @@ export const useStore = create((set, get) => ({
 
   excludeObject: async (name) => {
     try {
+      set((s) => {
+        const cur = s.exclude_object?.excluded_objects || [];
+        if (!cur.includes(name)) {
+          return {
+            exclude_object: {
+              ...(s.exclude_object || {}),
+              excluded_objects: [...cur, name],
+            },
+          };
+        }
+        return s;
+      });
       const res = await fetch(`${API}/api/v1/twin/exclude_object`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name })
+        body: JSON.stringify({ name }),
       });
-      if (!res.ok) alert("Failed to exclude: " + await res.text());
-    } catch (e) { alert("Failed to exclude: " + e.message); }
+      if (!res.ok) {
+        console.error("Failed to exclude object:", await res.text());
+      }
+    } catch (e) {
+      console.error("Failed to exclude object:", e.message);
+    }
   },
 
   executeAlertAction: async (alertId) => {

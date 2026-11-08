@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - Intelligent Automation: KAMP, Sensor-Aware Pre-Flight, Git Backups & Visual QA Audit
+
+### Added
+- **KAMP (Klipper Adaptive Meshing & Purging) Suite (`kamp/`, `klipper/kamp/`)**:
+  - `KAMP_Settings.cfg`: Configurable probe and purge parameters with Eddy rapid-scan bounds protection.
+  - `Adaptive_Mesh.cfg`: Intercepts `BED_MESH_CALIBRATE` to dynamically restrict mesh probing to the exact bounding box of sliced objects. Automatically scales probe count based on footprint dimensions.
+  - `Adaptive_Purge.cfg` (`LINE_PURGE`): Dynamically purges a clean strip immediately adjacent to the printed part, saving filament and cycle time.
+  - `Smart_Park.cfg` (`SMART_PARK`): Parks toolhead 5mm above the print area near the first extrusion point during final nozzle heatup, avoiding ooze and bed travel drool.
+- **Sensor-Aware Pre-Flight PRINT_START & PRINT_END (`print_start_end.cfg`)**:
+  - `PRINT_START`: Parametric slicer integration (`BED_TEMP`, `EXTRUDER_TEMP`, `CHAMBER_MIN`, `SOAK_MINS`) with dual-stage pre-heating (150°C standby during probing), automatic wipe-brush cleaning (`NOZZLE_WIPE`), KAMP rapid-scan adaptive mesh, and smart priming.
+  - `PRINT_END`: Automatic safe retraction, non-colliding Z-hop, rear toolhead parking, heater shutdown, fan cutoff, and mesh clearance.
+- **Automated Git Configuration Backup (`services/config_backup.py`, `api/routes/printer.py`)**:
+  - Real-time Git repository tracking for Klipper and Moonraker configuration directories.
+  - Auto-backup on configuration save with file summaries and timestamps.
+  - Complete REST API: `GET /api/printer/config/backups`, `POST /api/printer/config/backup`, `GET /api/printer/config/backup/diff`, and `POST /api/printer/config/backup/restore`.
+- **Rich Outbound Webhook Notifications (`core/notifications.py`)**:
+  - Discord embeds with thematic status colors (Blue/Green/Amber/Red) and Telegram HTML cards.
+  - PZEM-004T live energy telemetry reporting (total Wh, estimated electricity cost, peak power).
+  - High-resolution live camera snapshot attachments uploaded directly via multipart form-data on print completion, emergency halts, and defect exclusions.
+- **Interactive 3D Exclude-Object & Objects Manager Drawer (`frontend/src/Viewport.jsx`)**:
+  - Interactive 3D object bounding box selection with raycast hover feedback, dimensions, and click-to-cancel confirmation.
+  - Floating "Objects (Active/Total)" HUD drawer providing instant list-based visibility and single-click cancellation of individual objects.
+  - Synchronized with `store.js` optimistic state updates and backend `/api/v1/twin/exclude_object`.
+- **Timelapse Integration with QA Reports & AS9100 Visual Audit (`core/timelapse.py`, `services/qa_reporter.py`)**:
+  - Automated extraction of initial and final keyframe thumbnails for print traceability.
+  - SHA-256 cryptographic video hashing recorded in `print_history` table (migration `013_add_timelapse_to_history.py`).
+  - AS9100 Certificate of Conformance extended with immutable visual audit records and keyframe comparison page.
+
 ## [2.1.2] - Multi-Distribution Packaging: KIAUH Extension (Debian) & Pure NixOS Flake
 
 ### Added

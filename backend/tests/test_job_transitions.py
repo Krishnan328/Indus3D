@@ -124,7 +124,7 @@ def worker():
         mock.patch.object(tw.command_pipeline, "tick", side_effect=lambda snap, src="live": seen["ticks"].append(dict(snap))),
         mock.patch.object(tw.command_pipeline, "run_quality_cycle", return_value=[]),
         mock.patch.object(tw.quality_controller, "update", side_effect=lambda snap, *a: seen["qc"].append(snap["print_state"]) or []),
-        mock.patch.object(tw.timelapse_job, "finish", side_effect=lambda st: seen["finished"].append(st)),
+        mock.patch.object(tw.timelapse_job, "finish", side_effect=lambda st, history_id=None: seen["finished"].append(st)),
         mock.patch.object(tw.timelapse_job, "start", side_effect=lambda fn: seen["started"].append(fn)),
         mock.patch.object(tw, "get_timelapse_cfg", return_value={"enabled": True}),
         mock.patch.object(tw, "notify"),

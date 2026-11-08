@@ -2,23 +2,9 @@
 core/timelapse.py
 -------------------
 Captures webcam snapshots during a print and stitches them into an mp4 on
-completion, via ffmpeg (must be installed on the host — apt install ffmpeg;
-invoked only as a subprocess, never bundled). Two capture modes, configured
-in indus_overrides.cfg:
-  "interval" — snapshot every N seconds while printing. Works with any
-               slicer, no gcode macros needed.
-  "layer"    — snapshot whenever Z increases, using Indus3D's own live Z
-               tracking. Also needs no slicer-side layer-change macros —
-               most other timelapse tools require SET_PRINT_STATS_INFO or
-               similar; this doesn't.
-
-Snapshot source: Crowsnest's standard ?action=snapshot convention, derived
-import logging
-from settings.webcam_stream_url by swapping ?action=stream for
-?action=snapshot — this is Mainsail/Crowsnest's documented URL scheme, not
-guessed. Some camera-streamer configs don't support snapshots (a known
-Crowsnest issue); a failed capture is logged and skipped, never allowed to
-interrupt the print or the telemetry loop.
+completion, via ffmpeg.
+Provides cryptographic visual audit trails and ties timelapses directly
+to AS9100 print history and QA reports.
 """
 
 import os
@@ -26,8 +12,11 @@ import re
 import time
 import glob
 import shutil
+import hashlib
 import subprocess
 import threading
+import logging
+from typing import Optional, List, Dict
 import requests
 from config.settings import settings
 from config.loader import get_timelapse_cfg
@@ -48,20 +37,23 @@ class TimelapseJob:
     def __init__(self):
         self.active = False
         self.job_dir = None
+        self.job_id = None
         self.frame_count = 0
+        self.history_id = None
         self._last_capture_t = 0.0
         self._last_capture_z = None
 
-    def start(self, filename: str):
+    def start(self, filename: str, history_id: Optional[int] = None):
         safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", filename or "print")
-        job_id = f"{int(time.time())}_{safe_name}"
-        self.job_dir = os.path.join(settings.TIMELAPSE_DIR, job_id)
+        self.job_id = f"{int(time.time())}_{safe_name}"
+        self.job_dir = os.path.join(settings.TIMELAPSE_DIR, self.job_id)
         os.makedirs(self.job_dir, exist_ok=True)
         self.active = True
+        self.history_id = history_id
         self.frame_count = 0
         self._last_capture_t = 0.0
         self._last_capture_z = None
-        logging.info(f"🎬 Timelapse started: {self.job_dir}")
+        logging.info(f"🎬 Timelapse started: {self.job_dir} (job_id={self.job_id})")
 
     def maybe_capture(self, z: float):
         """Call every tick while printing — decides internally whether a
@@ -94,38 +86,54 @@ class TimelapseJob:
             logging.info(f"🔴 Timelapse snapshot failed: {e}")
             return False
 
-    def finish(self, status: str):
+    def finish(self, status: str, history_id: Optional[int] = None):
         """Call once on the transition out of 'printing'. Stitching runs in
         a background thread — never block the telemetry loop on ffmpeg."""
         if not self.active:
             return
         self.active = False
+        target_history_id = history_id or self.history_id
+
         if self.frame_count < 2:
             logging.info(f"🎬 Timelapse: only {self.frame_count} frame(s) captured, skipping video (print {status})")
             shutil.rmtree(self.job_dir, ignore_errors=True)
             return
+
         threading.Thread(
-            target=_stitch, args=(self.job_dir, get_timelapse_cfg().get("fps", 15), status), daemon=True
+            target=_stitch,
+            args=(self.job_dir, get_timelapse_cfg().get("fps", 15), status, target_history_id),
+            daemon=True,
         ).start()
 
 
-def _stitch(job_dir: str, fps: int, status: str):
+def _stitch(job_dir: str, fps: int, status: str, history_id: Optional[int] = None):
     out_path = os.path.join(job_dir, "timelapse.mp4")
     incident_path = os.path.join(job_dir, "incident.mp4")
-    pattern  = os.path.join(job_dir, "frame_%06d.jpg")
+    pattern = os.path.join(job_dir, "frame_%06d.jpg")
+    job_id = os.path.basename(job_dir)
+
     try:
+        frames = sorted(glob.glob(os.path.join(job_dir, "frame_*.jpg")))
+
+        # Preserve keyframes for QA report thumbnail insertion
+        if frames:
+            try:
+                shutil.copyfile(frames[0], os.path.join(job_dir, "keyframe_first.jpg"))
+                shutil.copyfile(frames[-1], os.path.join(job_dir, "keyframe_last.jpg"))
+                if len(frames) > 2:
+                    mid_idx = len(frames) // 2
+                    shutil.copyfile(frames[mid_idx], os.path.join(job_dir, "keyframe_mid.jpg"))
+            except Exception as ke:
+                logging.warning(f"Could not save keyframe thumbnails: {ke}")
+
         # If it's an error/halted, stitch the last 10 seconds into a separate incident clip first
         if status in ("error", "halted", "cancelled"):
-            # find how many frames we have
-            import glob
-            frames = sorted(glob.glob(os.path.join(job_dir, "frame_*.jpg")))
             if len(frames) > fps * 10:
                 start_frame = len(frames) - (fps * 10)
-                # ffmpeg can start from a specific image sequence number using -start_number
                 subprocess.run(
                     ["ffmpeg", "-y", "-start_number", str(start_frame), "-framerate", str(fps), "-i", pattern,
                      "-vframes", str(fps * 10), "-vcodec", "libx264", "-pix_fmt", "yuv420p", incident_path],
-                    capture_output=True, timeout=60
+                    capture_output=True, timeout=60,
                 )
 
         # Stitch full timelapse
@@ -137,11 +145,39 @@ def _stitch(job_dir: str, fps: int, status: str):
         if result.returncode != 0:
             logging.info(f"🔴 ffmpeg failed (timelapse {status}): {result.stderr[-500:]}")
             return
-        # Frames are only useful for debugging a failed stitch — clean up
-        # once the video exists, to save space on constrained storage.
-        for f in glob.glob(os.path.join(job_dir, "frame_*.jpg")):
-            os.remove(f)
-        logging.info(f"🎬 Timelapse ready: {out_path}")
+
+        # Compute SHA-256 hash of video for tamper-proof QA compliance
+        video_hash = ""
+        try:
+            with open(out_path, "rb") as vf:
+                video_hash = hashlib.sha256(vf.read()).hexdigest()
+        except Exception as he:
+            logging.warning(f"Failed to hash timelapse video: {he}")
+
+        # Clean up individual frame files to save space, keeping keyframes and mp4
+        for f in frames:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+        logging.info(f"🎬 Timelapse ready: {out_path} (SHA-256: {video_hash[:12]}...)")
+
+        # Update database with timelapse link
+        if history_id:
+            try:
+                from db.models import get_connection
+                conn = get_connection()
+                conn.execute(
+                    "UPDATE print_history SET timelapse_id = ?, timelapse_path = ?, timelapse_hash = ? WHERE id = ?",
+                    (job_id, out_path, video_hash, history_id),
+                )
+                conn.commit()
+                conn.close()
+                logging.info(f"Attached timelapse {job_id} to print history job {history_id}")
+            except Exception as dbe:
+                logging.error(f"Failed to link timelapse to print history: {dbe}")
+
     except FileNotFoundError:
         logging.info(f"🔴 Timelapse: ffmpeg not found — install it (apt install ffmpeg). Frames kept in {job_dir}")
     except Exception as e:
@@ -151,7 +187,7 @@ def _stitch(job_dir: str, fps: int, status: str):
 current_job = TimelapseJob()
 
 
-def list_timelapses() -> list:
+def list_timelapses() -> List[Dict]:
     """Completed timelapses, newest first."""
     if not os.path.isdir(settings.TIMELAPSE_DIR):
         return []
@@ -159,9 +195,11 @@ def list_timelapses() -> list:
     for name in sorted(os.listdir(settings.TIMELAPSE_DIR), reverse=True):
         video = os.path.join(settings.TIMELAPSE_DIR, name, "timelapse.mp4")
         if os.path.isfile(video):
+            has_incident = os.path.isfile(os.path.join(settings.TIMELAPSE_DIR, name, "incident.mp4"))
             out.append({
                 "id": name,
                 "size_bytes": os.path.getsize(video),
                 "created": os.path.getmtime(video),
+                "has_incident_clip": has_incident,
             })
     return out

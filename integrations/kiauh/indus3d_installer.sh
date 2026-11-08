@@ -27,8 +27,8 @@ initialize_paths() {
     KLIPPER_CONFIG_DIR="${USER_HOME}/printer_data/config"
     MOONRAKER_CONF="${KLIPPER_CONFIG_DIR}/moonraker.conf"
     PRINTER_CFG="${KLIPPER_CONFIG_DIR}/printer.cfg"
-    REPO_URL="https://github.com/Krishnan328/Indus3D.git"
-    REPO_BRANCH="codex/packaging-fixes"
+    REPO_URL="${INDUS3D_REPO_URL:-https://github.com/Krishnan328/Indus3D.git}"
+    REPO_BRANCH="${INDUS3D_REPO_BRANCH:-main}"
 }
 
 echo_info() { echo -e "${CYAN}[INDUS3D]${NC} $1"; }
@@ -173,6 +173,42 @@ configure_klipper_macros() {
     if [ -f "${PRINTER_CFG}" ]; then
         echo_info "Wiring Indus3D integration macros into ${PRINTER_CFG}..."
         run_as_user cp "${INSTALL_DIR}/indus3d.cfg" "${KLIPPER_CONFIG_DIR}/indus3d.cfg"
+
+        # Copy optional KAMP and print start/end suites
+        if [ -d "${INSTALL_DIR}/kamp" ]; then
+            run_as_user cp -r "${INSTALL_DIR}/kamp" "${KLIPPER_CONFIG_DIR}/"
+        fi
+        if [ -f "${INSTALL_DIR}/print_start_end.cfg" ]; then
+            run_as_user cp "${INSTALL_DIR}/print_start_end.cfg" "${KLIPPER_CONFIG_DIR}/"
+        fi
+
+        # Optional features: opt-in by default to avoid clashing with user's existing macros
+        local enable_kamp=false
+        local enable_print_start=false
+
+        if [ "${INDUS3D_ENABLE_KAMP:-}" = "1" ] || [ "${INDUS3D_ENABLE_KAMP:-}" = "true" ]; then
+            enable_kamp=true
+        elif [ -t 0 ] && [ "${ASSUME_YES:-false}" != "true" ]; then
+            read -r -p "Enable KAMP (Adaptive Meshing & Purging)? [y/N]: " ans_kamp
+            case "$ans_kamp" in [yY][eE][sS]|[yY]) enable_kamp=true ;; esac
+        fi
+
+        if [ "${INDUS3D_ENABLE_PRINT_START:-}" = "1" ] || [ "${INDUS3D_ENABLE_PRINT_START:-}" = "true" ]; then
+            enable_print_start=true
+        elif [ -t 0 ] && [ "${ASSUME_YES:-false}" != "true" ]; then
+            read -r -p "Install sensor-aware PRINT_START & PRINT_END macros? [y/N]: " ans_ps
+            case "$ans_ps" in [yY][eE][sS]|[yY]) enable_print_start=true ;; esac
+        fi
+
+        if [ "$enable_kamp" = "true" ]; then
+            echo_info "Enabling KAMP adaptive meshing in indus3d.cfg..."
+            sed -i 's/^#\[include kamp/\[include kamp/' "${KLIPPER_CONFIG_DIR}/indus3d.cfg"
+        fi
+        if [ "$enable_print_start" = "true" ]; then
+            echo_info "Enabling PRINT_START/PRINT_END in indus3d.cfg..."
+            sed -i 's/^#\[include print_start_end.cfg\]/\[include print_start_end.cfg\]/' "${KLIPPER_CONFIG_DIR}/indus3d.cfg"
+        fi
+
         if ! grep -q "\[include indus3d.cfg\]" "${PRINTER_CFG}"; then
             cat << EOF | sudo tee -a "${PRINTER_CFG}" >/dev/null
 

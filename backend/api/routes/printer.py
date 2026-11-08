@@ -366,9 +366,60 @@ def save_config_file(filename: str):
             files=files, data=data,
             timeout=_TIMEOUT_LONG,
         )
+        if res.ok:
+            try:
+                from services.config_backup import config_backup_mgr
+                config_backup_mgr.auto_backup(f"Saved {filename}")
+            except Exception as be:
+                logging.warning(f"Git auto-backup failed: {be}")
         return (res.text, res.status_code, {"Content-Type": "application/json"})
     except Exception as e:
         return _forward_error(e, f"save config/{filename}")
+
+
+# ── Configuration Git Backups ────────────────────────────────────────────────
+
+@printer_bp.route("/config/backups", methods=["GET"])
+def get_config_backups():
+    """Returns the list of git backup commits for Klipper configuration."""
+    from services.config_backup import config_backup_mgr
+    limit = request.args.get("limit", 25, type=int)
+    history = config_backup_mgr.get_history(limit=limit)
+    return jsonify({"backups": history})
+
+
+@printer_bp.route("/config/backup", methods=["POST"])
+def trigger_config_backup():
+    """Manually creates a git commit snapshot of all current configuration files."""
+    from services.config_backup import config_backup_mgr
+    body = request.get_json(silent=True) or {}
+    reason = body.get("reason", "Manual configuration backup")
+    result = config_backup_mgr.auto_backup(reason=reason)
+    return jsonify(result)
+
+
+@printer_bp.route("/config/backup/diff", methods=["GET"])
+def get_config_backup_diff():
+    """Returns the diff for a specific git backup commit."""
+    from services.config_backup import config_backup_mgr
+    commit = request.args.get("commit")
+    if not commit:
+        return jsonify({"error": "commit query parameter is required"}), 400
+    diff_data = config_backup_mgr.get_diff(commit)
+    return jsonify(diff_data)
+
+
+@printer_bp.route("/config/backup/restore", methods=["POST"])
+def restore_config_backup():
+    """Restores configuration files to a previous git backup commit."""
+    from services.config_backup import config_backup_mgr
+    body = request.get_json(silent=True) or {}
+    commit = body.get("commit")
+    if not commit:
+        return jsonify({"error": "commit parameter is required"}), 400
+    result = config_backup_mgr.restore_commit(commit)
+    return jsonify(result)
+
 
 
 # ── G-code execution ──────────────────────────────────────────────────────────

@@ -83,3 +83,10 @@ test3.py
 /frontend/dist/
 node_modules/
 
+# Agent local tooling & workspace
+.claude/
+.cursor/
+.serena/
+openspec/
+
+

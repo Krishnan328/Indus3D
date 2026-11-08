@@ -528,28 +528,21 @@ class TelemetryWorker:
             logging.info(f"⚠️  Error saving maintenance data: {e}")
 
     def _finish_job(self, snap, ext_, job_ended, job_switched):
-        """Notification, timelapse and print_history for the job that just ended."""
+        """print_history, timelapse, notifications and the QA report for the job that just ended."""
         ended_name = self._job_filename or snap.get("filename", "unknown file")
         # after a hand-over the live filament counter already belongs to the new job
         fil_now = self._last_fil_m if job_switched else ext_.get("filament_consumed_m", 0.0)
-        if job_ended == "complete":
-            notify(f"✅ Indus3D: print completed ({ended_name})")
-        elif job_ended in ("error", "cancelled"):
-            notify(f"🛑 Indus3D: print {job_ended} ({ended_name})")
-        timelapse_job.finish(job_ended)
 
-        # Log to print_history
+        duration_s = (time.time() - self._print_start_time) if self._print_start_time else 0.0
+        fil_used_g = max(0.0, fil_now - self._print_start_fil_m) * 3.0   # approx 3 g per metre of 1.75 mm PLA
+        power_used_wh = max(0.0, _energy_wh() - self._print_start_wh)
+        # Active Spoolman calculation (optional, fallback to 0 cost if not available)
+        cost = fil_used_g * get_spool_price_per_g()
+        cost += (power_used_wh / 1000.0) * 0.15          # electricity at $0.15 / kWh
+
+        # Log to print_history first: the timelapse link and the QA report need its id
+        history_id = None
         try:
-            duration_s = time.time() - self._print_start_time
-            fil_used_g = max(0.0, fil_now - self._print_start_fil_m) * 3.0 # Approx 3g per meter of 1.75 PLA
-            power_used_wh = _energy_wh() - self._print_start_wh
-
-            # Active Spoolman calculation (optional, fallback to 0 cost if not available)
-            price_per_g = get_spool_price_per_g()
-            cost = fil_used_g * price_per_g
-            # Add a bit for electricity (e.g. $0.15 / kWh)
-            cost += (power_used_wh / 1000.0) * 0.15
-
             conn = get_connection()
             c = conn.cursor()
             c.execute("SELECT MAX(id) FROM config_history")
@@ -576,12 +569,27 @@ class TelemetryWorker:
 
             conn.commit()
             conn.close()
-
-            if job_ended == "complete":
-                from services.qa_reporter import trigger_qa_report
-                trigger_qa_report(history_id, self._print_start_time, time.time(), ended_name or "unknown")
         except Exception as e:
             logging.info(f"⚠️  Error saving print history: {e}")
+
+        timelapse_job.finish(job_ended, history_id=history_id)
+
+        try:
+            from core.notifications import notify_print_completed, notify_print_halted
+            if job_ended == "complete":
+                notify_print_completed(filename=ended_name, duration_s=duration_s, energy_wh=power_used_wh,
+                                       cost_usd=cost, filament_g=fil_used_g)
+            elif job_ended in ("error", "cancelled"):
+                notify_print_halted(filename=ended_name, status=job_ended)
+        except Exception as ne:
+            logging.warning(f"Print completion notification error: {ne}")
+
+        if job_ended == "complete" and history_id:
+            try:
+                from services.qa_reporter import trigger_qa_report
+                trigger_qa_report(history_id, self._print_start_time, time.time(), ended_name or "unknown")
+            except Exception as re:
+                logging.warning(f"QA report trigger error: {re}")
 
     def _publish_disconnected_or_error(self, online: bool, klippy_state: str, klippy_connected: bool, state_message: str):
         """Immediately update state and push snapshot to WebSocket clients
@@ -951,6 +959,15 @@ class TelemetryWorker:
                 self._print_start_time = time.time()
                 self._print_start_fil_m = ext_.get("filament_consumed_m", 0.0)
                 self._print_start_wh = _energy_wh()
+                try:
+                    from core.notifications import notify_print_started
+                    notify_print_started(
+                        filename=snap.get("filename", "unknown file"),
+                        bed_temp=snap.get("bed_target"),
+                        ext_temp=snap.get("ext_target"),
+                    )
+                except Exception as ne:
+                    logging.debug(f"Print start notification skipped: {ne}")
             self._last_fil_m = ext_.get("filament_consumed_m", 0.0)
 
             self._prev_print_state = cur_state

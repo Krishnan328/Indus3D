@@ -8,7 +8,7 @@
 **Name:** Indus3D
 **Type:** Real-time digital twin and monitoring platform for Klipper-based FDM 3D printers
 **Developer:** Krishnan (student, startup founder, India)
-**GitHub:** Krishnan328/Indus3D — preview build on `codex/packaging-fixes`; `main` remains the stable branch.
+**GitHub:** Krishnan328/Indus3D (public, stable) + Krishnan328/Indus3D-private (active dev)
 **Stage:** Active development. Backend and frontend both functional. Tested against real hardware.
 **Goal:** Startup product targeting 3D printer manufacturers (initial contact made with Garuda3D)
 

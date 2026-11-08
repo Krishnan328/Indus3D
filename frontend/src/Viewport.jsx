@@ -1,7 +1,7 @@
 import React, { useRef, useState } from "react";
-import { Maximize2, Minimize2 } from "lucide-react";
+import { Maximize2, Minimize2, Layers, Ban, Check, X, AlertTriangle } from "lucide-react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Environment, GizmoHelper, GizmoViewcube } from "@react-three/drei";
+import { OrbitControls, Environment, GizmoHelper, GizmoViewcube, Box, Html } from "@react-three/drei";
 import * as THREE from "three";
 import { useStore } from "./store";
 import { PrintBed } from "./PrintBed";
@@ -9,62 +9,90 @@ import { GCodeVisualizerV2 } from "./GCodeVisualizerV2";
 import { useThemeTokens, useIsBrutalist } from "./theme";
 import { ErrorBoundary } from "./ErrorBoundary";
 
-import { Box } from "@react-three/drei";
-
 function ExcludeObjects() {
   const bed = useStore((s) => s.bed);
-  const excludeObjectState = useStore(s => s.exclude_object) || {};
-  const excludeObjectAction = useStore(s => s.excludeObject);
+  const excludeObjectState = useStore((s) => s.exclude_object) || {};
+  const excludeObjectAction = useStore((s) => s.excludeObject);
+  const [hoveredName, setHoveredName] = useState(null);
 
   if (!excludeObjectState || !excludeObjectState.objects) return null;
 
   const by = (bed.size_y_mm ?? 300) / 10;
 
-  return excludeObjectState.objects.map((obj, i) => {
-    let width = 20;
-    let depth = 20;
-    let cx = obj.center?.[0] || 0;
-    let cy = obj.center?.[1] || 0;
+  return (
+    <>
+      {excludeObjectState.objects.map((obj, i) => {
+        let width = 20;
+        let depth = 20;
+        let cx = obj.center?.[0] || 0;
+        let cy = obj.center?.[1] || 0;
 
-    if (obj.polygon && obj.polygon.length > 0) {
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      for (const [x, y] of obj.polygon) {
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-      width = maxX - minX;
-      depth = maxY - minY;
-      cx = minX + width / 2;
-      cy = minY + depth / 2;
-    }
+        if (obj.polygon && obj.polygon.length > 0) {
+          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+          for (const [x, y] of obj.polygon) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+          width = Math.max(maxX - minX, 10);
+          depth = Math.max(maxY - minY, 10);
+          cx = minX + width / 2;
+          cy = minY + depth / 2;
+        }
 
-    const sceneX = cx / 10;
-    const sceneZ = by - cy / 10;
-    const isExcluded = excludeObjectState.excluded_objects?.includes(obj.name);
+        const sceneX = cx / 10;
+        const sceneZ = by - cy / 10;
+        const isExcluded = excludeObjectState.excluded_objects?.includes(obj.name);
+        const isHovered = hoveredName === obj.name;
 
-    return (
-      <Box
-        key={obj.name || i}
-        args={[width / 10, 0.4, depth / 10]}
-        position={[sceneX, 0.2, sceneZ]}
-        onClick={(e) => {
-          e.stopPropagation();
-          excludeObjectAction(obj.name);
-        }}
-        onPointerOver={(e) => { e.object.material.opacity = 0.8; document.body.style.cursor = 'pointer'; }}
-        onPointerOut={(e) => { e.object.material.opacity = 0.3; document.body.style.cursor = 'auto'; }}
-      >
-        <meshBasicMaterial
-          color={isExcluded ? "#ef4444" : "#3b82f6"}
-          transparent
-          opacity={0.3}
-          wireframe={isExcluded}
-        />
-      </Box>
-    );
-  });
+        return (
+          <group key={obj.name || i}>
+            <Box
+              args={[width / 10, 0.4, depth / 10]}
+              position={[sceneX, 0.2, sceneZ]}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (window.confirm(`Exclude / Cancel print of object '${obj.name}'?`)) {
+                  excludeObjectAction(obj.name);
+                }
+              }}
+              onPointerOver={(e) => {
+                e.stopPropagation();
+                setHoveredName(obj.name);
+                document.body.style.cursor = "pointer";
+              }}
+              onPointerOut={(e) => {
+                e.stopPropagation();
+                setHoveredName(null);
+                document.body.style.cursor = "auto";
+              }}
+            >
+              <meshBasicMaterial
+                color={isExcluded ? "#ef4444" : isHovered ? "#60a5fa" : "#3b82f6"}
+                transparent
+                opacity={isExcluded ? 0.35 : isHovered ? 0.65 : 0.2}
+                wireframe={isExcluded}
+              />
+            </Box>
+
+            {isHovered && (
+              <Html position={[sceneX, 0.8, sceneZ]} center distanceFactor={18} style={{ pointerEvents: "none" }}>
+                <div className="bg-slate-900/90 border border-slate-700 text-white text-[11px] font-mono px-2 py-1 rounded shadow-lg whitespace-nowrap flex items-center gap-1.5 backdrop-blur-md">
+                  <span className={`w-2 h-2 rounded-full ${isExcluded ? "bg-red-500" : "bg-emerald-400"}`} />
+                  <span className="font-semibold">{obj.name}</span>
+                  <span className="opacity-60 text-[9px]">({width.toFixed(0)}×{depth.toFixed(0)}mm)</span>
+                  <span className={`text-[9px] px-1 py-0.5 rounded ${isExcluded ? "bg-red-500/20 text-red-300" : "bg-blue-500/20 text-blue-300"}`}>
+                    {isExcluded ? "CANCELLED" : "CLICK TO CANCEL"}
+                  </span>
+                </div>
+              </Html>
+            )}
+          </group>
+        );
+      })}
+    </>
+  );
 }
 
 
@@ -416,8 +444,11 @@ function SceneContents({ isDarkMode, ox, oz }) {
 // overlay. Same Canvas/scene either way; only the container size changes.
 export function Viewport({ isDarkMode }) {
   const [expanded, setExpanded] = useState(false);
+  const [showObjects, setShowObjects] = useState(false);
   const bed = useStore((s) => s.bed);
   const simMode = useStore((s) => s.simMode);
+  const excludeObjectState = useStore((s) => s.exclude_object) || {};
+  const excludeObjectAction = useStore((s) => s.excludeObject);
   const t = useThemeTokens();
   const brutalist = useIsBrutalist();
 
@@ -428,12 +459,78 @@ export function Viewport({ isDarkMode }) {
   const nozzleMat = useStore((s) => s.maintenanceConfig?.nozzle_material) || "Brass";
   const nozzleStyle = getNozzleStyle(nozzleMat);
 
+  const objects = excludeObjectState.objects || [];
+  const excludedNames = excludeObjectState.excluded_objects || [];
+  const activeCount = objects.filter((o) => !excludedNames.includes(o.name)).length;
+  const totalCount = objects.length;
+
   const canvasBlock = (
     <ErrorBoundary>
       <Canvas camera={{ position: [ox, ox * 1.2 + 8, oz + 18], fov: 50 }}>
         <SceneContents isDarkMode={isDarkMode} ox={ox} oz={oz} />
       </Canvas>
     </ErrorBoundary>
+  );
+
+  const objectsDrawer = showObjects && totalCount > 0 && (
+    <div className="absolute top-12 right-4 z-40 w-72 max-h-80 bg-slate-950/95 border border-slate-700/80 rounded-lg shadow-2xl p-3 flex flex-col backdrop-blur-md font-mono text-xs">
+      <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+        <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+          <Layers size={13} className="text-blue-400" /> Print Objects ({activeCount}/{totalCount})
+        </span>
+        <button
+          onClick={() => setShowObjects(false)}
+          className="text-slate-400 hover:text-white p-0.5"
+        >
+          <X size={13} />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto space-y-1.5 py-2 pr-1 custom-scrollbar">
+        {objects.map((obj, idx) => {
+          const isCancelled = excludedNames.includes(obj.name);
+          return (
+            <div
+              key={obj.name || idx}
+              className={`p-2 rounded border transition-colors flex items-center justify-between ${
+                isCancelled
+                  ? "bg-red-950/30 border-red-900/50 text-slate-400"
+                  : "bg-slate-900/60 border-slate-800 text-slate-200"
+              }`}
+            >
+              <div className="flex flex-col min-w-0 pr-2">
+                <span className={`truncate font-medium ${isCancelled ? "line-through opacity-70" : ""}`}>
+                  {obj.name}
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  {obj.center ? `pos: (${obj.center[0].toFixed(0)}, ${obj.center[1].toFixed(0)})` : "area defined"}
+                </span>
+              </div>
+              <button
+                disabled={isCancelled}
+                onClick={() => {
+                  if (window.confirm(`Exclude '${obj.name}' from printing?`)) {
+                    excludeObjectAction(obj.name);
+                  }
+                }}
+                className={`px-2 py-1 rounded text-[10px] font-semibold flex items-center gap-1 shrink-0 ${
+                  isCancelled
+                    ? "bg-slate-800 text-slate-500 cursor-not-allowed"
+                    : "bg-red-500/20 text-red-400 hover:bg-red-500/40 border border-red-500/30"
+                }`}
+              >
+                {isCancelled ? <Check size={10} /> : <Ban size={10} />}
+                {isCancelled ? "Cancelled" : "Cancel"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="pt-2 border-t border-slate-800 text-[10px] text-slate-400 flex items-center gap-1">
+        <AlertTriangle size={11} className="text-amber-400 shrink-0" />
+        <span>Click 3D bounding box or list button to cancel defect object</span>
+      </div>
+    </div>
   );
 
   const header = (
@@ -457,6 +554,20 @@ export function Viewport({ isDarkMode }) {
           />
           {nozzleStyle.name}
         </span>
+        {totalCount > 0 && (
+          <button
+            onClick={() => setShowObjects((s) => !s)}
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border transition-colors ${
+              showObjects
+                ? "bg-blue-500/30 border-blue-400 text-blue-200"
+                : "bg-blue-500/10 border-blue-500/30 text-blue-400 hover:bg-blue-500/20"
+            }`}
+            title="Inspect and cancel individual objects in this print"
+          >
+            <Layers size={11} />
+            Objects ({activeCount}/{totalCount})
+          </button>
+        )}
       </div>
       <button
         onClick={() => setExpanded((e) => !e)}
@@ -471,8 +582,9 @@ export function Viewport({ isDarkMode }) {
   if (expanded) {
     return (
       <div className="fixed inset-4 z-50 flex flex-col overflow-hidden bg-black/40 backdrop-blur-sm p-4">
-        <div className={`flex-1 flex flex-col overflow-hidden ${t.panel}`}>
+        <div className={`flex-1 flex flex-col overflow-hidden relative ${t.panel}`}>
           {header}
+          {objectsDrawer}
           <div className="flex-1 min-h-0">{canvasBlock}</div>
         </div>
       </div>
@@ -480,8 +592,9 @@ export function Viewport({ isDarkMode }) {
   }
 
   return (
-    <div className={`h-full flex flex-col overflow-hidden ${t.panel}`}>
+    <div className={`h-full flex flex-col overflow-hidden relative ${t.panel}`}>
       {header}
+      {objectsDrawer}
       <div className="flex-1 min-h-0 mx-3 mb-3">{canvasBlock}</div>
     </div>
   );
