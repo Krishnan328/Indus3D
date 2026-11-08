@@ -1,0 +1,18 @@
+[Unit]
+Description=Indus3D Smart Filament Sensor Host Daemon
+After=network.target moonraker.service
+Wants=moonraker.service
+
+[Service]
+Type=simple
+# Change User to match your printer host account (typically 'pi' or 'biqu')
+User=pi
+WorkingDirectory=/home/pi/printer_data/config
+ExecStart=/usr/bin/python3 /home/pi/printer_data/config/indus3d_sensor_daemon.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
