@@ -368,8 +368,8 @@ def save_config_file(filename: str):
         )
         if res.ok:
             try:
-                from services.config_backup import config_backup_mgr
-                config_backup_mgr.auto_backup(f"Saved {filename}")
+                from services.config_backup import get_manager
+                get_manager().auto_backup_bounded(f"Saved {filename}", timeout=8.0)
             except Exception as be:
                 logging.warning(f"Git auto-backup failed: {be}")
         return (res.text, res.status_code, {"Content-Type": "application/json"})
@@ -382,44 +382,65 @@ def save_config_file(filename: str):
 @printer_bp.route("/config/backups", methods=["GET"])
 def get_config_backups():
     """Returns the list of git backup commits for Klipper configuration."""
-    from services.config_backup import config_backup_mgr
+    from services.config_backup import get_manager
+    mgr = get_manager()
+    if not mgr.enabled:
+        return jsonify({"backups": [], **mgr._disabled()})
     limit = request.args.get("limit", 25, type=int)
-    history = config_backup_mgr.get_history(limit=limit)
-    return jsonify({"backups": history})
+    return jsonify({"backups": mgr.get_history(limit=limit)})
 
 
 @printer_bp.route("/config/backup", methods=["POST"])
 def trigger_config_backup():
-    """Manually creates a git commit snapshot of all current configuration files."""
-    from services.config_backup import config_backup_mgr
-    body = request.get_json(silent=True) or {}
-    reason = body.get("reason", "Manual configuration backup")
-    result = config_backup_mgr.auto_backup(reason=reason)
-    return jsonify(result)
+    """Manually creates a git commit snapshot of the current configuration files ({"confirmed": true})."""
+    from services.config_backup import get_manager
+    mgr = get_manager()
+    if not mgr.enabled:
+        return jsonify(mgr._disabled()), 409
+    body = request.get_json(silent=True)
+    body = body if isinstance(body, dict) else {}
+    if body.get("confirmed") is not True:
+        return jsonify({"error": "Confirmation required", "needs_confirmation": True}), 409
+    reason = body.get("reason")
+    result = mgr.auto_backup(reason=reason if isinstance(reason, str) else "Manual configuration backup")
+    return jsonify(result), (500 if result.get("status") == "error" else 200)
 
 
 @printer_bp.route("/config/backup/diff", methods=["GET"])
 def get_config_backup_diff():
-    """Returns the diff for a specific git backup commit."""
-    from services.config_backup import config_backup_mgr
+    """Returns the diff for a specific, known git backup commit."""
+    from services.config_backup import get_manager
+    mgr = get_manager()
+    if not mgr.enabled:
+        return jsonify(mgr._disabled()), 409
     commit = request.args.get("commit")
     if not commit:
         return jsonify({"error": "commit query parameter is required"}), 400
-    diff_data = config_backup_mgr.get_diff(commit)
-    return jsonify(diff_data)
+    diff_data = mgr.get_diff(commit)
+    return jsonify(diff_data), (404 if "error" in diff_data else 200)
 
 
 @printer_bp.route("/config/backup/restore", methods=["POST"])
 def restore_config_backup():
-    """Restores configuration files to a previous git backup commit."""
-    from services.config_backup import config_backup_mgr
-    body = request.get_json(silent=True) or {}
+    """Restores config files to a previous backup commit. Needs {"commit": <hex>, "confirmed": true}
+    and an idle printer. The answer lists the changed files; a FIRMWARE_RESTART applies them."""
+    from services.config_backup import get_manager
+    mgr = get_manager()
+    if not mgr.enabled:
+        return jsonify(mgr._disabled()), 409
+    body = request.get_json(silent=True)
+    body = body if isinstance(body, dict) else {}
     commit = body.get("commit")
-    if not commit:
+    if not isinstance(commit, str) or not commit:
         return jsonify({"error": "commit parameter is required"}), 400
-    result = config_backup_mgr.restore_commit(commit)
-    return jsonify(result)
-
+    if body.get("confirmed") is not True:
+        return jsonify({"error": "Restoring configuration needs confirmation", "needs_confirmation": True}), 409
+    if _printer_is_busy():
+        return jsonify({"error": "A print is active or paused: restore the configuration when the printer is idle"}), 409
+    if mgr.resolve_commit(commit) is None:
+        return jsonify({"error": "Unknown commit"}), 404
+    result = mgr.restore_commit(commit)
+    return jsonify(result), (500 if result.get("status") == "error" else 200)
 
 
 # ── G-code execution ──────────────────────────────────────────────────────────

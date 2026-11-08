@@ -449,6 +449,8 @@ export function Viewport({ isDarkMode }) {
   const simMode = useStore((s) => s.simMode);
   const excludeObjectState = useStore((s) => s.exclude_object) || {};
   const excludeObjectAction = useStore((s) => s.excludeObject);
+  const excludeError = useStore((s) => s.excludeError);
+  const clearExcludeError = useStore((s) => s.clearExcludeError);
   const t = useThemeTokens();
   const brutalist = useIsBrutalist();
 
@@ -485,6 +487,16 @@ export function Viewport({ isDarkMode }) {
           <X size={13} />
         </button>
       </div>
+
+      {excludeError && (
+        <div role="alert" className="mt-2 p-2 rounded border border-red-500/40 bg-red-950/60 text-red-200 text-[10px] flex items-start gap-1.5">
+          <AlertTriangle size={11} className="text-red-400 shrink-0 mt-0.5" />
+          <span className="flex-1 min-w-0 break-words">
+            Could not exclude '{excludeError.name}': {excludeError.message}
+          </span>
+          <button onClick={clearExcludeError} aria-label="Dismiss" className="text-red-300 hover:text-white shrink-0"><X size={10} /></button>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto space-y-1.5 py-2 pr-1 custom-scrollbar">
         {objects.map((obj, idx) => {

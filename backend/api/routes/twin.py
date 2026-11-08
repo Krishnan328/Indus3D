@@ -10,6 +10,7 @@ from digital_twin.quality_controller import quality_controller
 from config.settings import settings
 from config.loader import get_timelapse_cfg, update_timelapse_cfg
 import os
+import re
 
 twin_bp = Blueprint("twin", __name__)
 
@@ -260,33 +261,101 @@ def get_lifetime_stats():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+_OBJECT_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-:() ]{1,128}$")
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+_REASON_MAX = 200
+_DEFAULT_REASON = "Operator exclusion via Digital Twin"
+
+
+def _clean_reason(value) -> str:
+    """Bounded, single-line reason text for the notification."""
+    if not isinstance(value, str):
+        return _DEFAULT_REASON
+    text = _CONTROL_CHARS_RE.sub(" ", value).strip()[:_REASON_MAX].strip()
+    return text or _DEFAULT_REASON
+
+
+def _klipper_object_arg(name: str) -> str:
+    # The name pattern excludes quote characters, so quoting can never be escaped.
+    return f'"{name}"' if " " in name else name
+
+
+def _match_object(name: str, known) -> "str | None":
+    """Canonical spelling of ``name`` among Klipper's object names (exact, then case-insensitive)."""
+    if name in known:
+        return name
+    low = name.lower()
+    for k in known:
+        if isinstance(k, str) and k.lower() == low:
+            return k
+    return None
+
+
 @twin_bp.route("/exclude_object", methods=["POST"])
 def exclude_object():
-    obj_name = request.json.get("name")
-    reason = request.json.get("reason", "Operator exclusion via Digital Twin")
-    if not obj_name:
+    """Cancel one object of the running print. The name is never pasted into G-code unless it is
+    syntactically strict AND is one of the objects Klipper itself reports."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object body required"}), 400
+    obj_name = data.get("name")
+    if not isinstance(obj_name, str) or not obj_name.strip():
         return jsonify({"error": "name required"}), 400
-    try:
-        from core.notifications import notify_object_excluded
-        from api.server import _worker
-        w = _worker()
-        if w and type(w).__name__ == "SimulatedTelemetryWorker":
-            w.inject_gcode(f"TOGGLE_EXCLUDE_OBJECT NAME={obj_name}")
-            if hasattr(w, "excluded_objects"):
-                if obj_name in w.excluded_objects:
-                    w.excluded_objects.remove(obj_name)
-                else:
-                    w.excluded_objects.add(obj_name)
-            notify_object_excluded(obj_name, reason=reason)
-            return jsonify({"success": True, "sim": True})
+    if not _OBJECT_NAME_RE.fullmatch(obj_name) or obj_name != obj_name.strip():
+        return jsonify({"error": "invalid object name"}), 400
+    reason = _clean_reason(data.get("reason"))
 
-        from services.moonraker_client import MoonrakerClient
-        m = MoonrakerClient()
-        res = m.send_gcode(f"EXCLUDE_OBJECT NAME={obj_name}")
-        notify_object_excluded(obj_name, reason=reason)
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    from core.notifications import notify_object_excluded
+    from api import moonraker_util as mu
+    from api.server import _worker
+    w = _worker()
+
+    if w is not None and hasattr(w, "inject_gcode") and hasattr(w, "excluded_objects"):
+        # Simulator: same name validation against the objects of the simulated print.
+        if (w.latest or {}).get("print_state") not in ("printing", "paused"):
+            return jsonify({"error": "No print is active"}), 409
+        try:
+            known = [o.get("name") for o in w._get_exclude_payload().get("objects", [])]
+        except Exception:
+            known = []
+        if known:
+            canonical = _match_object(obj_name, known)
+            if canonical is None:
+                return jsonify({"error": f"Unknown object {obj_name!r}"}), 404
+        else:
+            canonical = obj_name
+        w.inject_gcode(f"TOGGLE_EXCLUDE_OBJECT NAME={_klipper_object_arg(canonical)}")
+        if canonical in w.excluded_objects:
+            w.excluded_objects.remove(canonical)
+        else:
+            w.excluded_objects.add(canonical)
+        notify_object_excluded(canonical, reason=reason)
+        return jsonify({"success": True, "sim": True, "name": canonical})
+
+    try:
+        st = mu.query_objects(["exclude_object", "print_stats"])
+    except mu.MoonrakerError as e:
+        return jsonify({"error": str(e)}), 502
+    if (st.get("print_stats") or {}).get("state") not in ("printing", "paused"):
+        return jsonify({"error": "No print is active"}), 409
+    ex = st.get("exclude_object") or {}
+    known = [o.get("name") for o in (ex.get("objects") or []) if isinstance(o, dict)]
+    canonical = _match_object(obj_name, known)
+    if canonical is None:
+        if _match_object(obj_name, ex.get("excluded_objects") or []) is not None:
+            return jsonify({"success": True, "already_excluded": True})
+        return jsonify({"error": f"Klipper reports no object named {obj_name!r}"}), 404
+    if _match_object(canonical, ex.get("excluded_objects") or []) is not None:
+        return jsonify({"success": True, "already_excluded": True, "name": canonical})
+
+    try:
+        res = mu.run_script(f"EXCLUDE_OBJECT NAME={_klipper_object_arg(canonical)}")
+    except mu.MoonrakerError as e:
+        return jsonify({"error": str(e)}), 502
+    if not res.ok:
+        return jsonify({"error": f"Klipper refused the exclusion: {str(res.text)[:300]}"}), 422
+    notify_object_excluded(canonical, reason=reason)
+    return jsonify({"success": True, "name": canonical})
 
 @twin_bp.route("/auto-pilot", methods=["GET"])
 def get_auto_pilot():

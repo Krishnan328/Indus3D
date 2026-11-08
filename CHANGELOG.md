@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Real-time Git repository tracking for Klipper and Moonraker configuration directories.
   - Auto-backup on configuration save with file summaries and timestamps.
   - Complete REST API: `GET /api/printer/config/backups`, `POST /api/printer/config/backup`, `GET /api/printer/config/backup/diff`, and `POST /api/printer/config/backup/restore`.
+  - Safety (review fixes): built lazily (no git at import) and **disabled** when no Klipper config dir exists (`KLIPPER_CONFIG_DIR`, `/var/lib/moonraker/config`, `~/printer_data/config`, `~/klipper_config`) - it never falls back to a folder in the source tree.
+  - Secrets stay out of the history: files named like `*token*`, `*secret*`, `*password*`, `*credentials*`, `*telegram*`, `*.env` are never tracked, and files whose content has token/password/api_key/secret assignments, MQTT credentials, Discord webhooks or Telegram bot tokens are skipped and listed as `skipped_secrets`. `.json` files (Moonraker/Mainsail UI state) are opt-in with `INDUS3D_CONFIG_BACKUP_JSON=1`.
+  - Manual backup and restore need `{"confirmed": true}`; restore also needs an idle printer (409 during a print), a hex commit hash that exists in the history (no `HEAD~3`/branch names), takes a "Pre-restore safety snapshot" first, never deletes files, and answers with `changed_files` / `needs_firmware_restart`.
+  - The auto-backup after a config save is time-bounded (8 s) and never fails the save.
+- **Object exclusion hardening**: `POST /api/v1/twin/exclude_object` only accepts a strict name that Klipper reports, requires an active print, checks the Klipper result (422/502 on refusal, no notification) and the UI rolls back its optimistic "cancelled" mark and shows the error.
 - **Rich Outbound Webhook Notifications (`core/notifications.py`)**:
   - Discord embeds with thematic status colors (Blue/Green/Amber/Red) and Telegram HTML cards.
   - PZEM-004T live energy telemetry reporting (total Wh, estimated electricity cost, peak power).
