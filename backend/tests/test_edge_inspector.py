@@ -11,10 +11,13 @@ Verifies:
 from __future__ import annotations
 
 import json
+import pytest
 import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+pytest.importorskip("numpy")
+pytest.importorskip("cv2")
 from api.server import app
 from core import edge_inspector_state as state
 from edge.watchdog import _pseudo_confidence, ANOMALY_AREA_THRESHOLD

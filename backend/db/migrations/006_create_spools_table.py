@@ -24,6 +24,6 @@ def up(conn):
 if __name__ == "__main__":
     import sqlite3, os
     conn = sqlite3.connect(os.path.join(os.path.dirname(__file__), "..", "flight_record.db"))
-    run_migration(conn)
+    up(conn)
     conn.commit()
     conn.close()

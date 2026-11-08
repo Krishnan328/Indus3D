@@ -9,8 +9,11 @@ Unit tests for multi-tier edge vision inspectors:
 - Inspector orchestrator
 """
 
-import numpy as np
 import pytest
+
+pytest.importorskip("numpy")   # requirements.txt omits these on purpose (see requirements-vision.txt)
+pytest.importorskip("cv2")
+import numpy as np
 
 from edge import config
 from edge.contour_inspector import ContourInspector, contour_inspector

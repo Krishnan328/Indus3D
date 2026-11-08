@@ -6,10 +6,6 @@ import hashlib
 from datetime import datetime
 from services.quality_metrics import EXCURSION_ALERT_IDS
 from db.models import get_connection
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 
 
 REPORTS_DIR = os.path.join(os.path.dirname(__file__), "..", "reports")
@@ -17,6 +13,16 @@ os.makedirs(REPORTS_DIR, exist_ok=True)
 
 def _generate_report_task(history_id: int, start_ts: float, end_ts: float, filename: str):
     logging.info(f"Generating QA Report for Job {history_id}...")
+    # matplotlib is optional (it is not in requirements.txt): import it here so the rest of the backend, and the
+    # telemetry worker that triggers reports, work without it
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_pdf import PdfPages
+    except ImportError:
+        logging.warning("QA report skipped: matplotlib is not installed (pip install matplotlib)")
+        return
     try:
         conn = get_connection()
         c = conn.cursor()

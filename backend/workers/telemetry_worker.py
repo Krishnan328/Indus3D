@@ -10,6 +10,7 @@ frontend G-code terminal can show them without a separate endpoint.
 """
 
 import logging
+import os
 import threading
 import time
 import urllib.parse

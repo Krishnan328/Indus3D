@@ -30,7 +30,6 @@ _ui_notifications = deque(maxlen=25)
 
 
 def pop_ui_notifications():
-    global _ui_notifications
     out = list(_ui_notifications)
     _ui_notifications.clear()
     return out
