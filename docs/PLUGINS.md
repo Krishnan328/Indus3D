@@ -77,6 +77,9 @@ unchanged. Both the live worker and the simulator route commands through
 | `mqtt_bridge` | State and events to an MQTT broker with Home Assistant discovery (`INDUS3D_MQTT_HOST`; plain TCP, no TLS). | `mqtt_bridge` |
 | `webhook_events` | Forwards every notification as a signed webhook (`INDUS3D_WEBHOOK_URLS`, `…_SECRET`). A generic webhook, **not** an Obico/OctoEverywhere client. | `webhook_events` |
 | `spoolman_sync` | **Opt-in** (`INDUS3D_SPOOLMAN_RECONCILE=report\|apply`): compares Spoolman's recorded use with the sensor's; `apply` tops up only when the sensor measured more. It never re-reports usage Moonraker already sent. | `spoolman_sync` |
+| `usb_link_health` | Finds the hub, port or cable behind MCU disconnects. Watches sysfs every second (device lost, re-enumerated, whole-hub drops, flaps) and the kernel log for `clear tt … error -71`, "Cannot enable. Maybe the USB cable is bad?" and enumeration failures; ranks suspects with their hub depth and what hangs below them. Warn-only; alerts during a print, on a flap, a hub drop or an error burst, but not when the printer is simply switched off. `INDUS3D_USB_MONITOR=0` disables it. | `usb_link_health` |
+
+`usb_link_health` reads error counts from the kernel log via `journalctl -k`. A service that only has `dialout` as a supplementary group cannot read it and falls back to sysfs-only (the status endpoint says which); add `systemd-journal` to the service's groups to enable error counts.
 
 The dashboard-widget items (corrections timeline, maintenance advisor, energy/cost) are **data endpoints only**; no frontend component has been added for them yet.
 

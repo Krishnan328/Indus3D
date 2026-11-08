@@ -181,6 +181,12 @@ def _plugin_state():
     except Exception:  # noqa: BLE001
         pass
     try:
+        from plugins.usb_link_health import monitor
+        out.append(("indus3d_usb_disconnects_total", float(sum(monitor.counters["sysfs_disconnects"].values())), None))
+        out.append(("indus3d_usb_errors_last_minute", float(len(monitor.err_times)), None))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         from plugins.filament_sensor import bridge
         s = bridge.summary()
         out.append(("indus3d_filament_sensor_connected", float(s["connected"]), None))
