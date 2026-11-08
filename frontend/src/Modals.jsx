@@ -1,9 +1,12 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense, lazy } from "react";
 import { Map, X, AlertTriangle, RefreshCw, FileText, Save, Power, Cpu } from "lucide-react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { API, useStore } from "./store";
 import { useThemeTokens, useIsBrutalist } from "./theme";
+
+// CodeMirror lives in its own chunk: it is only fetched when the configuration editor is opened.
+const EditorPane = lazy(() => import("./editor/EditorPane"));
 
 // The two modals below (HeightmapModal, ConfigEditor) are moved from App.jsx
 // verbatim, unchanged logic — same fetch calls, same localStorage keys, same
@@ -165,12 +168,6 @@ export function ConfigEditor({ isDarkMode, onClose }) {
     if (themeName === "workshop") return "#FDFBF7";
     return isDarkMode ? "#1e1e1e" : "#ffffff";
   };
-  const getThemeText = () => {
-    if (themeName === "creme") return "text-emerald-900";
-    if (themeName === "blueprint") return "text-[#103b8c]";
-    if (themeName === "workshop") return "text-[#111]";
-    return isDarkMode ? "text-gray-300" : "text-gray-800";
-  };
   const getThemeActiveItem = () => {
     if (themeName === "creme") return "border-emerald-600 bg-emerald-600/10 font-bold text-emerald-900";
     if (themeName === "blueprint") return "border-[#103b8c] bg-[#103b8c]/10 font-bold text-[#103b8c]";
@@ -191,7 +188,7 @@ export function ConfigEditor({ isDarkMode, onClose }) {
   useEffect(() => {
     (async()=>{
       try {
-        const res = await fetch(`${API}/api/v1/printer/files/config`);
+        const res = await fetch(`${API}/api/v1/printer/config/list`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const confFiles = (data.result || []).filter(f => f.path.endsWith(".cfg") || f.path.endsWith(".conf"));
@@ -200,7 +197,7 @@ export function ConfigEditor({ isDarkMode, onClose }) {
         if (confFiles.length > 0) {
           const firstFile = confFiles[0].path;
           setSelectedFile(firstFile);
-          const fileRes = await fetch(`${API}/api/v1/printer/files/config/${encodeURIComponent(firstFile)}`);
+          const fileRes = await fetch(`${API}/api/v1/printer/config/${encodeURIComponent(firstFile)}`);
           if (!fileRes.ok) throw new Error(`HTTP ${fileRes.status}`);
           const firstFileContent = await fileRes.text();
           setContent(firstFileContent);
@@ -224,7 +221,7 @@ export function ConfigEditor({ isDarkMode, onClose }) {
     setLoading(true);
     setSaveMsg("");
     try {
-      const res = await fetch(`${API}/api/v1/printer/files/config/${encodeURIComponent(path)}`);
+      const res = await fetch(`${API}/api/v1/printer/config/${encodeURIComponent(path)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
       setContent(text);
@@ -243,7 +240,7 @@ export function ConfigEditor({ isDarkMode, onClose }) {
       const fd = new FormData();
       const blob = new Blob([content], { type: "text/plain" });
       fd.append("file", blob, selectedFile);
-      const res = await fetch(`${API}/api/v1/printer/files/config/${encodeURIComponent(selectedFile)}`, { method: "POST", body: fd });
+      const res = await fetch(`${API}/api/v1/printer/config/${encodeURIComponent(selectedFile)}`, { method: "POST", body: fd });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setSavedContent(content);
       setSaveMsg("Saved");
@@ -281,21 +278,6 @@ export function ConfigEditor({ isDarkMode, onClose }) {
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uiPrefs.editorCloseOnEsc, isDirty, content, savedContent, selectedFile]);
-
-  const handleTextareaKeyDown = (e) => {
-    if (e.key !== "Tab") return;
-    e.preventDefault();
-    const el = e.target;
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    const spaces = " ".repeat(Math.max(1, uiPrefs.editorTabSize || 2));
-    const next = content.slice(0, start) + spaces + content.slice(end);
-    setContent(next);
-    // Restore cursor position after the inserted spaces (post-render).
-    requestAnimationFrame(() => {
-      el.selectionStart = el.selectionEnd = start + spaces.length;
-    });
-  };
 
   return (
     <div className="absolute inset-0 z-[200] flex flex-col bg-black/80 backdrop-blur-md p-4 sm:p-8">
@@ -335,13 +317,10 @@ export function ConfigEditor({ isDarkMode, onClose }) {
                 {filesError || "No config files available."}
               </div>
             ) : (
-              <textarea
-                value={content}
-                onChange={e => setContent(e.target.value)}
-                onKeyDown={handleTextareaKeyDown}
-                className={`flex-1 w-full h-full p-4 bg-transparent font-mono text-sm resize-none focus:outline-none ${getThemeText()}`}
-                spellCheck="false"
-              />
+              <Suspense fallback={<div className="flex-1 flex items-center justify-center text-gray-400 font-mono text-sm">Loading editor...</div>}>
+                <EditorPane key={selectedFile} value={content} mode={selectedFile.endsWith(".conf") ? "moonraker" : "klipper"}
+                  onChange={setContent} onSave={handleSave} onEscape={uiPrefs.editorCloseOnEsc ? requestClose : undefined} />
+              </Suspense>
             )}
 
             {/* Actions */}

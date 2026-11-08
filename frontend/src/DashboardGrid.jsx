@@ -9,6 +9,8 @@ import { CameraFeeds } from "./CameraFeeds";
 import { TemperatureChart } from "./TemperatureChart";
 import { ToolheadControls } from "./ToolheadControls";
 import { VibrationPanel } from "./VibrationPanel";
+import { MoonrakerSensorsCard } from "./MoonrakerSensorsCard";
+import { QueueCard } from "./QueueCard";
 
 import { useThemeTokens, useIsBrutalist } from "./theme";
 import { Responsive, WidthProvider } from "react-grid-layout/legacy";
@@ -20,7 +22,8 @@ const ResponsiveGridLayout = WidthProvider(Responsive);
 // ── Macros Card ──────────────────────────────────────────────────────────────
 export function MacrosCard({ isDarkMode }) {
   const macros = useStore((s) => s.macros);
-  const sendGcode = useStore((s) => s.sendGcode);
+  const runMacro = useStore((s) => s.runMacro);
+  const macroStatus = useStore((s) => s.macroStatus);
   const hiddenMacros = useStore((s) => s.uiPrefs.hiddenMacros);
   const macroOrder = useStore((s) => s.uiPrefs.macroOrder);
   const t = useThemeTokens();
@@ -45,6 +48,11 @@ export function MacrosCard({ isDarkMode }) {
       <div className="flex items-center gap-2 mb-2 shrink-0">
         <PlaySquare size={16} className={brutalist ? "" : "text-blue-500"} />
         <h3 className={t.heading}>Macros</h3>
+        {macroStatus && (
+          <span role="status" className={`ml-auto text-[10px] truncate ${macroStatus.ok ? "text-emerald-500" : "text-red-400"}`}>
+            {macroStatus.ok ? "✓" : "✗"} {macroStatus.message}
+          </span>
+        )}
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {!visibleMacros.length ? (
@@ -58,7 +66,7 @@ export function MacrosCard({ isDarkMode }) {
             {visibleMacros.map((macro) => (
               <button
                 key={macro}
-                onClick={() => sendGcode(macro)}
+                onClick={() => runMacro(macro)}
                 className={`px-2 py-2 text-[10px] sm:text-xs font-bold tracking-wide uppercase rounded flex items-center justify-center transition-transform active:scale-95 ${
                   brutalist
                     ? "bg-[#FFE9A8] border-2 border-[#111] text-[#111] hover:bg-[#FFD166]"
@@ -365,41 +373,47 @@ const DEFAULT_LAYOUTS = {
   lg: [
     { i: "viewport", x: 0, y: 0, w: 8, h: 5 },
     { i: "status", x: 8, y: 0, w: 4, h: 2 },
-    { i: "temperature", x: 8, y: 2, w: 4, h: 3 },
+    { i: "temperature", x: 8, y: 2, w: 4, h: 4 },
     { i: "quality", x: 0, y: 5, w: 3, h: 3 },
-    { i: "toolhead", x: 3, y: 5, w: 5, h: 3 },
+    { i: "toolhead", x: 3, y: 5, w: 5, h: 4 },
     { i: "cameras", x: 8, y: 5, w: 4, h: 3 },
     { i: "terminal", x: 0, y: 8, w: 6, h: 3 },
     { i: "macros", x: 6, y: 8, w: 6, h: 3 },
     { i: "actionlog", x: 0, y: 11, w: 6, h: 3 },
     { i: "leds", x: 0, y: 999, w: 6, h: 3 },
     { i: "vibration", x: 0, y: 1000, w: 6, h: 3 },
+    { i: "sensors", x: 0, y: 1001, w: 6, h: 3 },
+    { i: "queue", x: 0, y: 1002, w: 6, h: 4 },
   ],
   md: [
     { i: "viewport", x: 0, y: 0, w: 10, h: 5 },
     { i: "status", x: 0, y: 5, w: 5, h: 2 },
     { i: "quality", x: 5, y: 5, w: 5, h: 3 },
-    { i: "temperature", x: 0, y: 7, w: 5, h: 3 },
-    { i: "toolhead", x: 5, y: 8, w: 5, h: 3 },
+    { i: "temperature", x: 0, y: 7, w: 5, h: 4 },
+    { i: "toolhead", x: 5, y: 8, w: 5, h: 4 },
     { i: "cameras", x: 0, y: 10, w: 5, h: 3 },
     { i: "terminal", x: 5, y: 11, w: 5, h: 3 },
     { i: "macros", x: 0, y: 13, w: 5, h: 3 },
     { i: "actionlog", x: 5, y: 14, w: 5, h: 3 },
     { i: "leds", x: 0, y: 999, w: 5, h: 3 },
     { i: "vibration", x: 0, y: 1000, w: 5, h: 3 },
+    { i: "sensors", x: 0, y: 1001, w: 5, h: 3 },
+    { i: "queue", x: 0, y: 1002, w: 5, h: 4 },
   ],
   sm: [
     { i: "viewport", x: 0, y: 0, w: 6, h: 6 },
     { i: "status", x: 0, y: 8, w: 6, h: 2 },
-    { i: "temperature", x: 0, y: 10, w: 6, h: 2 },
+    { i: "temperature", x: 0, y: 10, w: 6, h: 3 },
     { i: "quality", x: 0, y: 12, w: 6, h: 3 },
-    { i: "toolhead", x: 0, y: 15, w: 6, h: 3 },
+    { i: "toolhead", x: 0, y: 15, w: 6, h: 4 },
     { i: "cameras", x: 0, y: 18, w: 6, h: 3 },
     { i: "terminal", x: 0, y: 21, w: 6, h: 3 },
     { i: "macros", x: 0, y: 24, w: 6, h: 3 },
     { i: "actionlog", x: 0, y: 27, w: 6, h: 3 },
     { i: "leds", x: 0, y: 999, w: 6, h: 3 },
     { i: "vibration", x: 0, y: 1000, w: 6, h: 3 },
+    { i: "sensors", x: 0, y: 1001, w: 6, h: 3 },
+    { i: "queue", x: 0, y: 1002, w: 6, h: 4 },
   ],
 };
 
@@ -409,38 +423,44 @@ const DEFAULT_STATIC_LAYOUTS = {
   lg: [
     { i: "viewport", x: 0, y: 0, w: 4, h: 5 },
     { i: "status", x: 4, y: 0, w: 4, h: 2 },
-    { i: "toolhead", x: 8, y: 0, w: 4, h: 3 },
-    { i: "temperature", x: 4, y: 2, w: 4, h: 3 },
+    { i: "toolhead", x: 8, y: 0, w: 4, h: 4 },
+    { i: "temperature", x: 4, y: 2, w: 4, h: 4 },
     { i: "cameras", x: 8, y: 3, w: 4, h: 3 },
     { i: "terminal", x: 0, y: 5, w: 6, h: 4 },
     { i: "macros", x: 6, y: 5, w: 6, h: 4 },
     { i: "actionlog", x: 0, y: 9, w: 12, h: 3 },
     { i: "leds", x: 0, y: 999, w: 6, h: 3 },
     { i: "vibration", x: 0, y: 1000, w: 6, h: 3 },
+    { i: "sensors", x: 0, y: 1001, w: 6, h: 3 },
+    { i: "queue", x: 0, y: 1002, w: 6, h: 4 },
   ],
   md: [
     { i: "viewport", x: 0, y: 0, w: 5, h: 5 },
     { i: "status", x: 5, y: 0, w: 5, h: 2 },
-    { i: "toolhead", x: 5, y: 2, w: 5, h: 3 },
-    { i: "temperature", x: 0, y: 5, w: 5, h: 3 },
+    { i: "toolhead", x: 5, y: 2, w: 5, h: 4 },
+    { i: "temperature", x: 0, y: 5, w: 5, h: 4 },
     { i: "cameras", x: 5, y: 5, w: 5, h: 3 },
     { i: "terminal", x: 0, y: 8, w: 5, h: 4 },
     { i: "macros", x: 5, y: 8, w: 5, h: 4 },
     { i: "actionlog", x: 0, y: 12, w: 10, h: 3 },
     { i: "leds", x: 0, y: 999, w: 5, h: 3 },
     { i: "vibration", x: 0, y: 1000, w: 5, h: 3 },
+    { i: "sensors", x: 0, y: 1001, w: 5, h: 3 },
+    { i: "queue", x: 0, y: 1002, w: 5, h: 4 },
   ],
   sm: [
     { i: "viewport", x: 0, y: 0, w: 6, h: 4 },
     { i: "status", x: 0, y: 4, w: 6, h: 2 },
-    { i: "temperature", x: 0, y: 6, w: 6, h: 3 },
-    { i: "toolhead", x: 0, y: 9, w: 6, h: 3 },
+    { i: "temperature", x: 0, y: 6, w: 6, h: 4 },
+    { i: "toolhead", x: 0, y: 9, w: 6, h: 4 },
     { i: "cameras", x: 0, y: 12, w: 6, h: 3 },
     { i: "terminal", x: 0, y: 15, w: 6, h: 4 },
     { i: "macros", x: 0, y: 19, w: 6, h: 4 },
     { i: "actionlog", x: 0, y: 23, w: 6, h: 3 },
     { i: "leds", x: 0, y: 999, w: 6, h: 3 },
     { i: "vibration", x: 0, y: 1000, w: 6, h: 3 },
+    { i: "sensors", x: 0, y: 1001, w: 6, h: 3 },
+    { i: "queue", x: 0, y: 1002, w: 6, h: 4 },
   ],
 };
 
@@ -559,6 +579,8 @@ export function DashboardGrid({ isDarkMode }) {
             <div key="leds"><CardWrapper isLocked={isLocked}><LedControlCard isDarkMode={isDarkMode} /></CardWrapper></div>
             <div key="actionlog"><CardWrapper isLocked={isLocked}><ActionLog isDarkMode={isDarkMode} /></CardWrapper></div>
             <div key="vibration"><CardWrapper isLocked={isLocked}><VibrationPanel /></CardWrapper></div>
+            <div key="sensors"><CardWrapper isLocked={isLocked}><MoonrakerSensorsCard /></CardWrapper></div>
+            <div key="queue"><CardWrapper isLocked={isLocked}><QueueCard /></CardWrapper></div>
           </ResponsiveGridLayout>
         </div>
       </div>

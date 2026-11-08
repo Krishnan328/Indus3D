@@ -4,6 +4,7 @@ import { X, Info, Bell, BellOff, MessageCircle, Send, LogOut, Layout, Server, Ca
 import { useStore, API } from "./store";
 import { useThemeTokens, useIsBrutalist } from "./theme";
 import { ThemeSwitcher } from "./ThemeSwitcher";
+import { ToolheadPrefs } from "./toolhead/ToolheadPrefs";
 
 function TabButton({ id, icon, label, activeTab, setActiveTab, brutalist }) {
   const isActive = activeTab === id;
@@ -42,7 +43,7 @@ function Toggle({ label, description, checked, onChange, borderClass, brutalist 
   );
 }
 
-export function SettingsModal({ onClose }) {
+export function SettingsModal({ onClose, onOpenSystem }) {
   const [activeTab, setActiveTab] = useState("general");
   const t = useThemeTokens();
   const brutalist = useIsBrutalist();
@@ -225,6 +226,14 @@ export function SettingsModal({ onClose }) {
                     </div>
                   </div>
                 </div>
+
+                {onOpenSystem && (
+                  <div>
+                    <button type="button" onClick={onOpenSystem} className={`px-3 py-1.5 text-xs border rounded ${t.border} hover:bg-gray-500/10`}>
+                      Open the System page: host, MCUs, services, updates, backups
+                    </button>
+                  </div>
+                )}
 
                 <div className={`pt-6 ${brutalist ? "border-t-[3px] border-[#111]" : `border-t ${t.border}`}`}>
                   <h4 className={`mb-3 ${t.label}`}>Power Devices</h4>
@@ -1097,6 +1106,7 @@ function ControlTab({ uiPrefs, setUiPref, borderClass, brutalist, t }) {
           <Toggle label="Invert Z" checked={uiPrefs.invertZ} onChange={(v) => setUiPref("invertZ", v)} borderClass={borderClass} brutalist={brutalist} />
         </div>
       </div>
+      <ToolheadPrefs uiPrefs={uiPrefs} setUiPref={setUiPref} borderClass={borderClass} brutalist={brutalist} t={t} toggle={Toggle} />
     </div>
   );
 }

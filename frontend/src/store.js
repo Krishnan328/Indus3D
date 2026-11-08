@@ -1,4 +1,11 @@
 import { create } from "zustand";
+import { createPrinterStatusSlice } from "./slices/printerStatusSlice";
+import { createMacroSlice } from "./slices/macroSlice";
+import { createSystemSlice } from "./slices/systemSlice";
+import { createToolheadSlice } from "./slices/toolheadSlice";
+import { createUiPrefsSlice, loadUiPrefs } from "./slices/uiPrefsSlice";
+import { createFilesSlice } from "./slices/filesSlice";
+import { createThermalSlice } from "./slices/thermalSlice";
 
 // Keep this build's API port in sync with backend/.env's FLASK_PORT. Vite
 // substitutes VITE_* values at build time, so restart the dev server or
@@ -145,6 +152,15 @@ function deriveAlerts(data) {
 
 export const useStore = create((set, get) => ({
 
+  // ── Slices (see slices/printerStatusSlice.js for the pattern) ──────────────
+  ...createPrinterStatusSlice(set, get, () => API),
+  ...createMacroSlice(set, get, () => API),
+  ...createSystemSlice(set, get, () => API),
+  ...createToolheadSlice(set, get, () => API),
+  ...createUiPrefsSlice(set, get),
+  ...createFilesSlice(set, get, () => API),
+  ...createThermalSlice(set, get, () => API),
+
   // ── Authentication ────────────────────────────────────────────────────────
   // Mirrors the backend's auth_required / authenticated state. Fetched once
   // on mount by App.jsx — when auth is disabled, the login screen never
@@ -181,13 +197,7 @@ export const useStore = create((set, get) => ({
   theme: localStorage.getItem("indus3d_theme") || "classic",
   dashboardMode: localStorage.getItem("indus3d_mode") || "dynamic",
   isDarkMode: localStorage.getItem("indus3d_dark") !== "false",
-  uiPrefs: (() => {
-    try {
-      return JSON.parse(localStorage.getItem("indus3d_ui_prefs") || "{}");
-    } catch {
-      return {};
-    }
-  })(),
+  uiPrefs: loadUiPrefs(),   // defaults + stored values (slices/uiPrefsSlice.js)
 
   fetchPreferences: async () => {
     try {
@@ -385,17 +395,22 @@ export const useStore = create((set, get) => ({
     } catch { /* silent */ }
   },
 
-  fetchSensorData: async () => {
+  // `full` also refreshes the slow-changing data (history, maintenance, macros, lifetime stats).
+  // The API allows 120 requests/min per client. Polling all six endpoints every 2 s (180/min) used to
+  // trip that limiter and eventually got the dashboard's own IP banned for 24 h, so App.jsx now polls
+  // power + environment every 2 s and the rest every 30 s.
+  fetchSensorData: async (full = true) => {
     try {
+      const none = Promise.resolve(null);
       const [pr, er, hr, mr] = await Promise.all([
         fetch(`${API}/api/v1/power`),
         fetch(`${API}/api/v1/environment`),
-        fetch(`${API}/api/v1/history`),
-        fetch(`${API}/api/v1/maintenance`),
+        full ? fetch(`${API}/api/v1/history`) : none,
+        full ? fetch(`${API}/api/v1/maintenance`) : none,
       ]);
-      
+
       // Macros
-      try {
+      if (full) try {
         const res = await fetch(`${API}/api/v1/printer/macros`);
         if (res.ok) {
           const data = await res.json();
@@ -406,7 +421,7 @@ export const useStore = create((set, get) => ({
       }
 
       // Lifetime Stats
-      try {
+      if (full) try {
         const res = await fetch(`${API}/api/v1/twin/stats/lifetime`);
         if (res.ok) {
           set({ lifetimeStats: await res.json() });
@@ -419,8 +434,8 @@ export const useStore = create((set, get) => ({
       ]);
       if (pr.ok) set({ power:            await pr.json() });
       if (er.ok) set({ environment:      await er.json() });
-      if (hr.ok) set({ printHistory:     await hr.json() });
-      if (mr.ok) { 
+      if (hr && hr.ok) set({ printHistory:     await hr.json() });
+      if (mr && mr.ok) { 
         const d = await mr.json(); 
         set({ 
           maintenanceHints: d.hints ?? [], 

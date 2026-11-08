@@ -1,9 +1,9 @@
 import React from "react";
-import { LayoutDashboard, GitBranch, Files, FileText, Map, Settings, Sparkles, Layers, Power, FileDown, Database } from "lucide-react";
+import { LayoutDashboard, GitBranch, Files, FileText, Map, Settings, Sparkles, Layers, Power, FileDown, Database, Server } from "lucide-react";
 import { useStore } from "./store";
 import { useThemeTokens, useIsBrutalist, useIsSoft } from "./theme";
 
-const PAGE_IDS = ["dashboard", "twin", "files", "fleet"];
+const PAGE_IDS = ["dashboard", "twin", "files", "fleet", "system"];
 
 export function NavRail({ page, setPage, onOpenEditor, onOpenHeightmap, onOpenSettings, onOpenCalibration, onOpenPower, onOpenSpools }) {
   const t = useThemeTokens();
@@ -15,6 +15,7 @@ export function NavRail({ page, setPage, onOpenEditor, onOpenHeightmap, onOpenSe
     { id: "fleet",      icon: Layers,          label: "Fleet Command", onClick: () => setPage("fleet") },
     { id: "twin",       icon: GitBranch,       label: "Digital Twin", onClick: () => setPage("twin") },
     { id: "files",      icon: Files,           label: "Files", onClick: () => setPage("files") },
+    { id: "system",     icon: Server,          label: "System", onClick: () => setPage("system") },
     { id: "config",     icon: FileText,        label: "Config editor", onClick: onOpenEditor },
     { id: "heightmap",  icon: Map,             label: "Heightmap", onClick: onOpenHeightmap },
     { id: "calibration", icon: Sparkles,       label: "Guided calibration", onClick: onOpenCalibration },

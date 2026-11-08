@@ -33,4 +33,9 @@ export default defineConfig([
       'react-hooks/purity': 'off',
     },
   },
+  {
+    // Pure-logic unit tests run with node --test (no browser, no extra test dependency).
+    files: ['**/*.test.js'],
+    languageOptions: { globals: { ...globals.node } },
+  },
 ])

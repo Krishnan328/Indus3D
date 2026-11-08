@@ -9,6 +9,7 @@ import { DigitalTwinPage } from "./DigitalTwinPage";
 import { FleetPage } from "./FleetPage";
 import { IncidentModal } from "./IncidentModal";
 import { FileManager } from "./FileManager";
+import { SystemPage } from "./SystemPage";
 import { ConfigEditor, HeightmapModal, PowerModal } from "./Modals";
 import { SettingsModal } from "./SettingsModal";
 import { CalibrationWizard } from "./CalibrationWizard";
@@ -325,9 +326,11 @@ export default function App() {
     fetchProfile();
     fetchPreferences();
     initWebSocket();
-    fetchSensorData();
+    fetchSensorData(true);
     fetchActionLog();
-    const iv = setInterval(fetchSensorData, 2000);
+    let tick = 0;
+    // Fast data every 2 s; history/maintenance/macros/lifetime every 30 s (see fetchSensorData).
+    const iv = setInterval(() => fetchSensorData(++tick % 15 === 0), 2000);
     return () => clearInterval(iv);
   }, [authStatus, fetchActionLog, fetchProfile, fetchPreferences, fetchRemoteConfig, fetchSensorData, initWebSocket]);
 
@@ -364,7 +367,7 @@ export default function App() {
         <AlertBar />
         {showEditor    && <ConfigEditor   isDarkMode={isDarkMode} onClose={() => setShowEditor(false)} />}
         {showHeightmap && <HeightmapModal isDarkMode={isDarkMode} onClose={() => setShowHeightmap(false)} />}
-        {showSettings  && <SettingsModal onClose={() => setShowSettings(false)} />}
+        {showSettings  && <SettingsModal onClose={() => setShowSettings(false)} onOpenSystem={() => { setShowSettings(false); setPage("system"); }} />}
         {showCalibration && <CalibrationWizard onClose={() => setShowCalibration(false)} />}
         {showPower && <PowerModal onClose={() => setShowPower(false)} />}
         {showSpools && <SpoolManager onClose={() => setShowSpools(false)} />}
@@ -373,6 +376,7 @@ export default function App() {
         {page === "dashboard" ? <DashboardGrid key={dashboardMode} isDarkMode={isDarkMode} />
           : page === "fleet" ? <FleetPage isDarkMode={isDarkMode} />
           : page === "files" ? <FileManager />
+          : page === "system" ? <SystemPage />
           : <DigitalTwinPage isDarkMode={isDarkMode} />}
       </div>
     </div>
