@@ -3,8 +3,8 @@ core/timelapse.py
 -------------------
 Captures webcam snapshots during a print and stitches them into an mp4 on
 completion, via ffmpeg.
-Provides cryptographic visual audit trails and ties timelapses directly
-to AS9100 print history and QA reports.
+Records a SHA-256 of each video next to the file (an integrity record, not
+tamper-proofing) and ties timelapses to print history and the QA report.
 """
 
 import os
@@ -16,7 +16,7 @@ import hashlib
 import subprocess
 import threading
 import logging
-from typing import Optional, List, Dict
+from typing import Callable, Optional, List, Dict
 import requests
 from config.settings import settings
 from config.loader import get_timelapse_cfg
@@ -86,27 +86,59 @@ class TimelapseJob:
             logging.info(f"🔴 Timelapse snapshot failed: {e}")
             return False
 
-    def finish(self, status: str, history_id: Optional[int] = None):
+    def finish(self, status: str, history_id: Optional[int] = None,
+               on_done: Optional[Callable[[], None]] = None) -> bool:
         """Call once on the transition out of 'printing'. Stitching runs in
-        a background thread — never block the telemetry loop on ffmpeg."""
+        a background thread — never block the telemetry loop on ffmpeg.
+
+        Returns True when a stitch thread was started: ``on_done`` is then called exactly once from that thread
+        after the print_history row has been updated (or the stitch failed), success or not. Returns False when
+        there is nothing to stitch (timelapse inactive, or fewer than 2 frames); ``on_done`` is NOT called and
+        the caller should run whatever it wanted to chain immediately."""
         if not self.active:
-            return
+            return False
         self.active = False
         target_history_id = history_id or self.history_id
 
         if self.frame_count < 2:
             logging.info(f"🎬 Timelapse: only {self.frame_count} frame(s) captured, skipping video (print {status})")
             shutil.rmtree(self.job_dir, ignore_errors=True)
-            return
+            return False
 
         threading.Thread(
             target=_stitch,
-            args=(self.job_dir, get_timelapse_cfg().get("fps", 15), status, target_history_id),
+            args=(self.job_dir, get_timelapse_cfg().get("fps", 15), status, target_history_id, on_done),
             daemon=True,
         ).start()
+        return True
 
 
-def _stitch(job_dir: str, fps: int, status: str, history_id: Optional[int] = None):
+def _sha256_file(path: str, chunk_size: int = 1024 * 1024) -> str:
+    """SHA-256 of a file, read in 1 MiB chunks (timelapses can be hundreds of MB)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _stitch(job_dir: str, fps: int, status: str, history_id: Optional[int] = None,
+            on_done: Optional[Callable[[], None]] = None):
+    """Stitch, hash, link in print_history, then (always, even on failure) call ``on_done``."""
+    try:
+        _stitch_inner(job_dir, fps, status, history_id)
+    finally:
+        if on_done is not None:
+            try:
+                on_done()
+            except Exception as e:  # noqa: BLE001
+                logging.error(f"Timelapse completion callback failed: {e}")
+
+
+def _stitch_inner(job_dir: str, fps: int, status: str, history_id: Optional[int] = None):
     out_path = os.path.join(job_dir, "timelapse.mp4")
     incident_path = os.path.join(job_dir, "incident.mp4")
     pattern = os.path.join(job_dir, "frame_%06d.jpg")
@@ -146,11 +178,10 @@ def _stitch(job_dir: str, fps: int, status: str, history_id: Optional[int] = Non
             logging.info(f"🔴 ffmpeg failed (timelapse {status}): {result.stderr[-500:]}")
             return
 
-        # Compute SHA-256 hash of video for tamper-proof QA compliance
+        # SHA-256 of the video, stored next to it in print_history (integrity record for the QA report)
         video_hash = ""
         try:
-            with open(out_path, "rb") as vf:
-                video_hash = hashlib.sha256(vf.read()).hexdigest()
+            video_hash = _sha256_file(out_path)
         except Exception as he:
             logging.warning(f"Failed to hash timelapse video: {he}")
 

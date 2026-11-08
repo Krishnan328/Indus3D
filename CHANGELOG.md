@@ -31,8 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Synchronized with `store.js` optimistic state updates and backend `/api/v1/twin/exclude_object`.
 - **Timelapse Integration with QA Reports & AS9100 Visual Audit (`core/timelapse.py`, `services/qa_reporter.py`)**:
   - Automated extraction of initial and final keyframe thumbnails for print traceability.
-  - SHA-256 cryptographic video hashing recorded in `print_history` table (migration `013_add_timelapse_to_history.py`).
-  - AS9100 Certificate of Conformance extended with immutable visual audit records and keyframe comparison page.
+  - SHA-256 of each video (hashed in 1 MiB chunks) stored in `print_history` next to the video path (migration `013_add_timelapse_to_history.py`): an integrity record to compare against, not tamper-proofing.
+  - The QA report now runs after the timelapse link is written (the stitch thread triggers it, also when ffmpeg fails, in which case the certificate says "Timelapse: unavailable"); without a timelapse it starts immediately.
+  - AS9100 Certificate of Conformance extended with the timelapse reference/hash and a keyframe comparison page.
+- **Notifications are asynchronous**: all `notify*` calls only add the UI toast and enqueue delivery on one bounded background worker (oldest dropped when full); webcam snapshot, Discord, Telegram and plugin channels never run on the telemetry thread. `wait=True` delivers inline. Telegram text is HTML-escaped; Discord embeds respect field limits and cannot ping (`allowed_mentions`). Print-completed messages report the logged excursion count, or "not evaluated" when it cannot be measured; they no longer claim "100% In-Spec".
 
 ## [2.1.2] - Multi-Distribution Packaging: KIAUH Extension (Debian) & Pure NixOS Flake
 

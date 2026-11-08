@@ -15,6 +15,7 @@ def test_rich_notifications_also_reach_plugin_registered_channels(monkeypatch):
     n.notify_print_halted("a.gcode", "error")
     n.notify_critical_alert("bed_runaway", "heater stuck on")
     n.notify_object_excluded("cube_1", reason="operator")
+    assert n.flush(5)
     assert len(got) == 5 and "a.gcode" in got[0] and "1h" in got[1] and "cube_1" in got[4]
 
 
@@ -25,7 +26,7 @@ def test_plain_notify_uses_the_channel_registry(monkeypatch):
         seen.append(message)
         return "sent"
     monkeypatch.setattr(n, "_CHANNELS", [_send_probe])
-    out = n.notify("hello")
+    out = n.notify("hello", wait=True)
     assert seen == ["hello"] and "probe" in out["sent"] and "ui" in out["sent"]
 
 
@@ -35,4 +36,5 @@ def test_a_failing_plugin_channel_never_breaks_a_print_notification(monkeypatch)
     monkeypatch.setattr(n, "_CHANNELS", [_send_bad])
     monkeypatch.setattr(n, "capture_snapshot", lambda: None)
     n.notify_print_completed("a.gcode")        # must not raise
-    assert n.notify("x")["sent"].count("ui") == 1
+    assert n.flush(5)
+    assert n.notify("x", wait=True)["sent"].count("ui") == 1

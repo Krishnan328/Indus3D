@@ -47,7 +47,7 @@ Indus3D is an open-source, real-time digital twin and closed-loop quality contro
 - **Full Klipper Controls**: Mainsail-style toolhead jogging, temperature gauges, extrusion controls, emergency stop, and interactive G-code terminal with live `[QC]` feedback tagging.
 - **Touch UI Mode**: Tailored for 5" and 7" Raspberry Pi touchscreen displays.
 - **Rich Sensor Telemetry & Webhooks**: PZEM-004T AC power metering with Wh/cost reporting, Spoolman active spool tracking, and multi-channel rich Discord embeds & Telegram notifications with attached live webcam snapshots.
-- **Cryptographic Visual QA Audit & Timelapse**: Automatically stitches timelapses, preserves keyframe thumbnails, computes immutable SHA-256 video hashes, and embeds visual audit records into AS9100 Certificates of Conformance.
+- **Visual QA Audit & Timelapse**: Automatically stitches timelapses, preserves keyframe thumbnails, stores a SHA-256 integrity hash of each video next to it, and references it (and keyframes) in the AS9100 Certificate of Conformance. The report is generated after the video link is saved.
 
 ### 6. Edge Computer Vision & Failure Detection (`backend/edge`)
 - **Zero-Dataset Motion Watchdog (`edge/watchdog.py`)**: Real-time OpenCV MOG2 background subtraction detecting detached prints or moving spaghetti masses without requiring any machine learning model or dataset.

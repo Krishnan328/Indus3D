@@ -572,24 +572,39 @@ class TelemetryWorker:
         except Exception as e:
             logging.info(f"⚠️  Error saving print history: {e}")
 
-        timelapse_job.finish(job_ended, history_id=history_id)
+        # Captured now: the next queued job overwrites self._print_start_time before a stitch can finish.
+        start_ts, end_ts = self._print_start_time, time.time()
+
+        def _start_report():
+            if job_ended == "complete" and history_id:
+                try:
+                    from services.qa_reporter import trigger_qa_report
+                    trigger_qa_report(history_id, start_ts, end_ts, ended_name or "unknown")
+                except Exception as re:
+                    logging.warning(f"QA report trigger error: {re}")
+
+        # With a timelapse the stitch thread runs the report once the video link is in print_history (or the
+        # stitch failed); otherwise there is nothing to wait for and it starts right away.
+        chained = timelapse_job.finish(job_ended, history_id=history_id, on_done=_start_report)
 
         try:
             from core.notifications import notify_print_completed, notify_print_halted
             if job_ended == "complete":
+                excursions = None
+                try:
+                    from services.quality_metrics import count_excursions
+                    excursions = count_excursions(start_ts, end_ts)    # None when it cannot be measured
+                except Exception as qe:
+                    logging.debug(f"Excursion count unavailable: {qe}")
                 notify_print_completed(filename=ended_name, duration_s=duration_s, energy_wh=power_used_wh,
-                                       cost_usd=cost, filament_g=fil_used_g)
+                                       cost_usd=cost, filament_g=fil_used_g, excursions=excursions)
             elif job_ended in ("error", "cancelled"):
                 notify_print_halted(filename=ended_name, status=job_ended)
         except Exception as ne:
             logging.warning(f"Print completion notification error: {ne}")
 
-        if job_ended == "complete" and history_id:
-            try:
-                from services.qa_reporter import trigger_qa_report
-                trigger_qa_report(history_id, self._print_start_time, time.time(), ended_name or "unknown")
-            except Exception as re:
-                logging.warning(f"QA report trigger error: {re}")
+        if not chained:
+            _start_report()
 
     def _publish_disconnected_or_error(self, online: bool, klippy_state: str, klippy_connected: bool, state_message: str):
         """Immediately update state and push snapshot to WebSocket clients
