@@ -181,7 +181,8 @@ def test_healthy_heating_ramp_is_not_flagged():
 def make_bridge(ini=""):
     ext = set()
     notes = []
-    b = fs_mod.SensorBridge(url="http://x", ini_path=ini, notify=notes.append, arbiter_external=ext)
+    b = fs_mod.SensorBridge(url="http://x", ini_path=ini, notify=notes.append, arbiter_external=ext,
+                            audit=lambda *a, **k: None)
     return b, ext, notes
 
 

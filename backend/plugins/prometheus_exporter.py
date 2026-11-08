@@ -190,9 +190,23 @@ def _plugin_state():
         from plugins.filament_sensor import bridge
         s = bridge.summary()
         out.append(("indus3d_filament_sensor_connected", float(s["connected"]), None))
-        for key in ("diameter_mm", "spool_remaining_g"):
+        for key in ("diameter_mm", "nozzle_diameter_mm", "nozzle_flow_mm3_s", "spool_used_g", "spool_remaining_g",
+                    "runout_countdown_mm", "bed_jerk_mg"):
             if isinstance(s.get(key), (int, float)):
                 out.append((f"indus3d_filament_sensor_{key}", float(s[key]), None))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from plugins.esp_bed_hub import hub
+        st = hub.status()
+        if st["enabled"]:
+            out.append(("indus3d_bed_hub_connected", float(bool(st["hub_connected"])), None))
+            out.append(("indus3d_bed_hub_crash_latched", float(bool(st["crash_latched"])), None))
+            ch, bed = st.get("chamber") or {}, st.get("bed_accel") or {}
+            for name, val in (("chamber_temp_c", ch.get("temp_c")), ("chamber_humidity_pct", ch.get("humidity_pct")),
+                              ("chamber_pressure_hpa", ch.get("pressure_hpa")), ("bed_jerk_mg", bed.get("jerk_mg"))):
+                if isinstance(val, (int, float)):
+                    out.append((f"indus3d_bed_hub_{name}", float(val), None))
     except Exception:  # noqa: BLE001
         pass
     return out

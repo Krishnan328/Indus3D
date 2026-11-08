@@ -9,6 +9,8 @@ import { ActionLog } from "./ActionLog";
 import { PowerPanel } from "./PowerPanel";
 import { TimelapseGallery } from "./TimelapseGallery";
 import { ShaperTuner } from "./ShaperTuner";
+import { FilamentSensorCard } from "./FilamentSensorCard";
+import { BedHubCard } from "./BedHubCard";
 import { useThemeTokens } from "./theme";
 import { Responsive, WidthProvider } from "react-grid-layout/legacy";
 import { GripHorizontal, Lock, Unlock } from "lucide-react";
@@ -100,6 +102,8 @@ function SensorFusionCard() {
           <span>{(environment.humidity ?? 0).toFixed(1)} %</span>
         </div>
       </div>
+      <FilamentSensorCard />
+      <BedHubCard />
     </div>
   );
 }

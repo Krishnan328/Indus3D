@@ -406,10 +406,11 @@ def test_spoolman_no_active_spool_or_disabled():
 
 # ── esp_bed_hub / chamber_environment ─────────────────────────────────────────
 def test_esp_hub_crash_edge_and_fresh_chamber():
-    from plugins.esp_bed_hub import EspHub
+    from plugins.esp_bed_hub import EspHub, TelemetryStore
     notes = []
     payload = {"crash_detected": False, "chamber": {"temp_c": 30.0, "humidity_pct": 40.0}}
-    hub = EspHub(url="http://x", fetch=lambda u: dict(payload), notify=notes.append)
+    hub = EspHub(url="http://x", fetch=lambda u: dict(payload), notify=notes.append,
+                 store=TelemetryStore(enabled=False), audit=lambda *a: None)
     hub.poll_once(now=100.0)
     assert hub.chamber(now=105.0) == {"temp_c": 30.0, "humidity_pct": 40.0} and hub.chamber(now=200.0) is None
     payload["crash_detected"] = True
@@ -420,8 +421,8 @@ def test_esp_hub_crash_edge_and_fresh_chamber():
 
 
 def test_esp_hub_unreachable_and_disabled():
-    from plugins.esp_bed_hub import EspHub
-    hub = EspHub(url="http://x", fetch=lambda u: (_ for _ in ()).throw(OSError("no")))
+    from plugins.esp_bed_hub import EspHub, TelemetryStore
+    hub = EspHub(url="http://x", fetch=lambda u: (_ for _ in ()).throw(OSError("no")), store=TelemetryStore(enabled=False))
     assert hub.poll_once() is None and hub.chamber() is None and hub.status()["connected"] is False
     assert EspHub(url="").enabled is False
 
