@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Working plugin framework (`core/plugin_hooks.py`, `core/command_pipeline.py`, `plugins/`); see `docs/PLUGINS.md`. The loader is now actually called at startup.
+- Plugins: `shadow_mode` (records the G-code the controller would send while the auto-pilot is off), `audit_trail` (persists every command, veto and correction reason to `command_log`/`action_log`), `arbiter` (prevents M221/M220 fights with other writers), `watchdog` (disables the auto-pilot on runaway behaviour), `approval` (optional human approval of corrections), `first_layer_guard`, `thermal_sanity`, `filament_sensor` (sensor daemon bridge), `health_score`, `prometheus_exporter` (`/metrics`).
+- Analysis, integration and data plugins: `run_recorder`, `corrective_tracker`, `corrections_timeline`, `model_scorer`, `controller_tuner`, `slicer_feedback`, `print_report`, `calibration_runner`, `spool_planner`, `maintenance_advisor`, `energy_cost`, `fleet_aggregator`, `esp_bed_hub`, `chamber_environment`, `tmc_current`, `chat_actions`, `mqtt_bridge`, `webhook_events`, `spoolman_sync`. New `controller.inputs` hook.
+- Vetoed commands are now fed back to the controller (`notify_vetoed`) so they are proposed again instead of lost.
+- `helpers/` folder: filament sensor, lab toolkit, corrective G-code tracker, KIAUH extension.
+
+### Fixed
+- Rust DSP sources restored after an accidental revert (binary stream, collision events, notch filter, resonance analyser).
+- `printer.py`: config save crash, `/macros` NameError, G-code allowlist bypass via newlines, homing during a print.
+- Quality controller: flow-loop gain and curve-factor compounding, clog detection now only runs on a real current measurement; sintering and roughness model errors.
+
 ## [2.0.0] - Production Release
 
 ### Added

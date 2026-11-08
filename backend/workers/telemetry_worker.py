@@ -23,6 +23,7 @@ from digital_twin.thermal_model import thermal_model
 from digital_twin.extrusion_model import extrusion_model
 from digital_twin.snapshot_logger import log_snapshot
 from digital_twin.quality_controller import quality_controller
+from core import command_pipeline
 from core.alert_actions import execute_alert_action, clear_actioned
 from core.notifications import notify, pop_ui_notifications
 from core.timelapse import current_job as timelapse_job
@@ -318,6 +319,8 @@ class TelemetryWorker:
         thm  = thermal_model.update(snap)
         ext_ = extrusion_model.update(snap)
 
+        command_pipeline.tick(snap, "live")
+
         # Critical alerts act immediately from here, not from a frontend
         # HTTP call — a runaway with nobody looking at the dashboard still
         # needs M112 (and, if configured, a physical power cutoff) to fire.
@@ -409,11 +412,12 @@ class TelemetryWorker:
         if snap["print_state"] == "printing":
             if get_timelapse_cfg().get("enabled"):
                 timelapse_job.maybe_capture(snap["cmd_z"])
-            cmds = quality_controller.update(snap, kin, thm, ext_)
-            for cmd in cmds:
-                ok = _moonraker.send_gcode(cmd)
-                tag = "[QC]" if ok else "[QC FAIL]"
-                self.live_commands.append({"text": f"{tag} {cmd}", "ts": time.time()})
+            # Every command goes through the plugin pipeline (shadow, arbiter,
+            # watchdog, audit); with no plugins it is update + send, as before.
+            for r in command_pipeline.run_quality_cycle(
+                    quality_controller, snap, kin, thm, ext_, _moonraker.send_gcode, "live"):
+                tag = "[QC]" if r["ok"] else "[QC FAIL]"
+                self.live_commands.append({"text": f"{tag} {r['command']}", "ts": r["ts"]})
 
         if snap["print_state"] == "printing":
             log_snapshot(snap, kin, thm, ext_)

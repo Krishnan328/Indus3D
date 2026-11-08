@@ -81,6 +81,11 @@ install_auth_gate(app)
 from api.rate_limiter import check_rate_limit
 check_rate_limit(app)
 
+# Drop-in plugins (backend/plugins/*.py): audit trail, shadow mode, arbiter,
+# watchdog. Loaded after auth so their routes are covered by the auth gate.
+from plugins import load_plugins
+load_plugins(app)
+
 # Startup auth message
 
 @app.after_request

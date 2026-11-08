@@ -22,6 +22,7 @@ import sys
 import threading
 from collections import deque
 
+from core import command_pipeline
 from digital_twin.state import printer_state
 from digital_twin.kinematic_model import kinematic_model
 from digital_twin.thermal_model import thermal_model
@@ -480,10 +481,11 @@ class SimulatedTelemetryWorker:
         ext_["over_extrusion_flag"] = sim_extruding and sim_ratio > 1.25
 
         # Quality controller — log commands to terminal in sim
+        command_pipeline.tick(snap, "sim")
         if is_active:
-            cmds = quality_controller.update(snap, kin, thm, ext_)
-            for cmd in cmds:
-                self.inject_quality_command(cmd)   # show in terminal
+            command_pipeline.run_quality_cycle(
+                quality_controller, snap, kin, thm, ext_,
+                self.inject_quality_command, "sim")   # shows in the terminal
 
         if snap["print_state"] == "printing":
             log_snapshot(snap, kin, thm, ext_)

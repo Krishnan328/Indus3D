@@ -90,9 +90,20 @@ from digital_twin.bed_safety import bed_safety
 
 class QualityController:
 
-    def __init__(self):
+    def __init__(self, shadow: bool = False):
+        # Shadow instances never send or persist anything: they run the same
+        # math as the real controller (auto-pilot forced on, side effects such
+        # as the clog pause suppressed) so a plugin can report what the real
+        # one *would* have sent while the auto-pilot is off.
+        self._dry_run = shadow
+        self.shadow_enabled = False
+        self._shadow_instance = None
+        self.last_shadow = None          # {"ts", "commands", "corrections"} of the last tick
+        self._tick_corrections: list = []
+        self.last_corrections: list = [] # corrections logged by the last update()
+
         # Auto-pilot mode: If False, twin does math but sends NO commands
-        self._auto_pilot = self._load_persisted_autopilot()
+        self._auto_pilot = True if shadow else self._load_persisted_autopilot()
 
         # Dynamic settings live in the profile's print section. Keep a
         # complete fallback so a partially populated printer profile cannot
@@ -197,11 +208,66 @@ class QualityController:
         except Exception:
             pass
 
+    def notify_vetoed(self, command: str) -> None:
+        """A plugin dropped ``command`` before it reached the printer.
+
+        The controller assumed it had been applied and would not resend an
+        unchanged value, so a vetoed correction would be lost for good. Forget
+        the assumed state for that parameter so the next cycle recomputes and
+        proposes it again (flow/speed fall back to their 100 % baseline).
+        """
+        token = command.strip().split(None, 1)[0].upper() if command.strip() else ""
+        if token == "M221":
+            self._flow_cmd = self._flow_trim = 100.0
+            self.active["flow_pct"] = 100
+        elif token == "M220":
+            self._speed_cmd = 100.0
+            self.active["speed_pct"] = 100
+        elif token == "SET_PRESSURE_ADVANCE":
+            self._pa_cmd = None
+        elif token == "M104":
+            self._temp_cmd = None
+        elif token == "M106":
+            self._fan_cmd = None
+        elif token == "SET_VELOCITY_LIMIT":
+            self._velocity_cmd = self._scv_cmd = self._accel_cmd = None
+        elif token == "SET_RETRACTION":
+            self._retract_cmd = None
+        elif token == "SET_INPUT_SHAPER":
+            self.active["shaper_hz"] = 0
+            self._last_shaper_t = 0.0
+
+    def enable_shadow(self) -> None:
+        """Compute (but never send) corrections while the auto-pilot is off."""
+        self.shadow_enabled = True
+
     def update(self, snap: dict, kin: dict, thm: dict, ext: dict) -> list:
         """
         Call on every telemetry tick during printing.
         Returns a list of G-code strings to send this tick (may be empty).
+
+        With the auto-pilot off this still returns [] — nothing is ever sent —
+        but if shadow mode is enabled the would-be commands are exposed in
+        ``last_shadow`` for plugins to record.
         """
+        self._tick_corrections = []
+        self.last_shadow = None
+        commands = self._update(snap, kin, thm, ext)
+        self.last_corrections = self._tick_corrections
+
+        if self.shadow_enabled and not self._dry_run and not self.auto_pilot:
+            if self._shadow_instance is None:
+                self._shadow_instance = QualityController(shadow=True)
+            sh = self._shadow_instance
+            would_send = sh.update(snap, kin, thm, ext)
+            self.last_shadow = {
+                "ts": time.time(),
+                "commands": list(would_send),
+                "corrections": list(sh.last_corrections),
+            }
+        return commands
+
+    def _update(self, snap: dict, kin: dict, thm: dict, ext: dict) -> list:
         if snap.get("print_state") != "printing":
             # Reset commanded values when not printing
             self._flow_cmd  = 100.0
@@ -447,7 +513,9 @@ class QualityController:
         }
         self.corrections.insert(0, entry)
         self.corrections = self.corrections[:50]   # keep last 50
-        logging.info(f"🎯 QualityCtrl [{correction_type}] {value} — {reason}")
+        self._tick_corrections.append(entry)
+        if not self._dry_run:
+            logging.info(f"🎯 QualityCtrl [{correction_type}] {value} — {reason}")
 
 
     # ── Dynamic Mathematical Models ───────────────────────────────────────────
@@ -666,7 +734,12 @@ class QualityController:
         predicted_pressure = delta_p / 1000.0
         self.active["pressure"] = round(predicted_pressure, 1)
 
-        if nozzle_status == "CLOG_WARNING":
+        if nozzle_status == "CLOG_WARNING" and self._dry_run:
+            # Shadow run: report the pause instead of performing it.
+            self._log("clog_pause", current_ratio,
+                      f"would pause print: current ratio {current_ratio:.2f}")
+            commands.append("PAUSE")
+        elif nozzle_status == "CLOG_WARNING":
             import requests
             from config.settings import settings
             from core.alert_actions import _log_action, _flash_led_for_alert
