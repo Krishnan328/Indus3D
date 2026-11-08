@@ -8,7 +8,7 @@ on:
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # setup-python has no Python 3.9 build for the newer ubuntu-latest image
     steps:
     - uses: actions/checkout@v4
     
@@ -65,7 +65,7 @@ jobs:
       run: npm run build
 
   lab:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # setup-python has no Python 3.9 build for the newer ubuntu-latest image
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
