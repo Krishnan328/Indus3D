@@ -116,8 +116,9 @@ def test_secret_files_and_content_are_never_committed(mgr, cfg):
     write(cfg, "telegram.conf", "[telegram]\nchat: 1\n")
     write(cfg, "my_secrets.cfg", "[x]\na: b\n")
     write(cfg, "notify.cfg", "[notifier x]\nurl: discord://\ntoken: abc123\n")
-    write(cfg, "hooks.cfg", "[a]\nurl: https://discord.com/api/webhooks/123456/abcDEF-xyz\n")
-    write(cfg, "tg.cfg", "[a]\nv: 123456789:AAH3k9Zx1mQ7pLw2eRt5yUi8oPa0sDfGhJk\n")
+    # fake secrets are assembled at run time so no token-shaped string sits in the repository
+    write(cfg, "hooks.cfg", "[a]\nurl: https://discord.com/api/" + "webhooks/" + "123456/" + "abcDEF-xyz\n")
+    write(cfg, "tg.cfg", "[a]\nv: " + "123456789" + ":" + "AA" + "H3k9Zx1mQ7pLw2eRt5yUi8oPa0sDfGhJk" + "\n")
     write(cfg, "mqtt.cfg", "[mqtt]\nusername: bob\n")
     write(cfg, "broker.cfg", "[a]\nbroker: mqtt://bob:hunter2@host\n")
     write(cfg, "key.cfg", "[a]\napi_key = zzz\n")
