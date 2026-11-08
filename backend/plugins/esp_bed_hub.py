@@ -40,7 +40,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 from core.plugin_hooks import ctx_veto
-from plugins._common import Poller, http_json, notify_safe
+from plugins._common import Poller, http_json, notify_critical_safe
 
 PLUGIN_INFO = {
     "title": "ESP8266 bed hub",
@@ -161,14 +161,14 @@ class TelemetryStore:
 
 # ── the plugin ────────────────────────────────────────────────────────────────
 class EspHub:
-    def __init__(self, url=None, fetch=None, notify=notify_safe, store=None, post=None, moonraker=None,
+    def __init__(self, url=None, fetch=None, notify=None, store=None, post=None, moonraker=None,
                  hold=None, exclude_object=None, audit=None):
         self.url = _env_url() if url is None else url
         self._fetch = fetch or (lambda u: http_json(u.rstrip("/") + "/telemetry", timeout=1.5))
         self._post = post or (lambda path, body: http_json(self.url.rstrip("/") + path, timeout=8, method="POST", body=body,
                                                            headers={"X-Indus3D-Action": "1"}))
         self._moonraker = moonraker or self._moonraker_default
-        self.notify = notify
+        self.notify = notify or (lambda message: notify_critical_safe("bed_crash", message))
         self._audit = audit or self._log_action
         self.store = store if store is not None else TelemetryStore()
         self.hold = os.environ.get("INDUS3D_BED_CRASH_HOLD", "1") != "0" if hold is None else hold

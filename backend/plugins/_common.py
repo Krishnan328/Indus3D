@@ -28,6 +28,17 @@ def notify_safe(message: str) -> None:
         logging.info(f"⚠️  notify failed: {e}")
 
 
+def notify_critical_safe(alert_id: str, message: str) -> None:
+    """A safety alert: the rich Discord/Telegram card with a webcam snapshot (non-blocking, queued), falling
+    back to the plain notification if the rich path is unavailable."""
+    try:
+        from core.notifications import notify_critical_alert
+        notify_critical_alert(alert_id, message)
+    except Exception as e:  # noqa: BLE001
+        logging.info(f"⚠️  critical notify failed ({e}); sending plain")
+        notify_safe(message)
+
+
 def http_json(url: str, timeout: float = 2.0, method: str = "GET", body: Any = None,
               headers: Optional[dict] = None) -> Any:
     data = json.dumps(body).encode() if body is not None else None

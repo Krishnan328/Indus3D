@@ -38,3 +38,14 @@ def test_a_failing_plugin_channel_never_breaks_a_print_notification(monkeypatch)
     n.notify_print_completed("a.gcode")        # must not raise
     assert n.flush(5)
     assert n.notify("x", wait=True)["sent"].count("ui") == 1
+
+
+def test_bed_crash_uses_the_rich_critical_alert_path(monkeypatch):
+    from plugins import esp_bed_hub as eh
+    seen = []
+    monkeypatch.setattr(n, "notify_critical_alert", lambda alert_id, text: seen.append((alert_id, text)))
+    hub = eh.EspHub(url="http://x", fetch=lambda u: {"connected": True, "crash_detected": True, "crash_info": {"peak_jerk_mg": 2450},
+                    "bed_accel": {}, "chamber": {}, "last_update": 1.0, "daemon": {}},
+                    store=eh.TelemetryStore(enabled=False), audit=lambda *a: None)
+    hub.poll_once(now=1.0)
+    assert len(seen) == 1 and seen[0][0] == "bed_crash" and "2450" in seen[0][1]
