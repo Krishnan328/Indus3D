@@ -1,220 +1,212 @@
 # Deployment & Setup Guide
-## Indus3D ESP8266 Multi-Sensor Hub (Bed Collision Monitor + Input Shaping + Chamber Telemetry)
+## Indus3D ESP8266 bed sensor hub (bed crash detection, Y input shaping, chamber telemetry)
 
-The hub is pre-configured to run **100% over USB Serial** out of the box (zero Wi-Fi delay, instant boot, and plug-and-play operation with your Raspberry Pi / Klipper host or laptop). Wi-Fi can easily be re-enabled whenever needed by setting `#define ENABLE_WIFI true` in `config.h`.
+The hub talks to the printer's host over **USB serial only** (`ENABLE_WIFI` is `false`). A small daemon on the
+host owns the serial port; Klipper macros, Moonraker and Indus3D all go through that daemon.
+
+```
+ESP8266 --USB--> esp_bed_monitor_daemon.py (systemd: esp8266_bed_hub.service, 127.0.0.1:7127)
+                    |-- crash alert --> Moonraker POST /printer/print/pause, then BED_CRASH_HANDLER JERK=<mg>
+                    |-- 1 Hz status  --> MQTT (optional) --> Moonraker [sensor] --> Fluidd/Mainsail
+                    |-- HTTP API     <-- esp_hub_ctl.py  <-- Klipper gcode_shell_command <-- macros
+                    `-- HTTP API     <-- Indus3D backend plugin esp_bed_hub (SQLite telemetry_samples, UI card)
+```
+
+Hardware: NodeMCU ESP8266, ADXL345 on HSPI with CS on GPIO16 mounted on the bed's Y carriage, BME280 on
+GPIO0 (SDA) / GPIO2 (SCL) at 0x76. See `WIRING_AND_PINOUT.md`.
+
+> **What has and has not been verified.** The firmware was verified on the real hardware by its author at version
+> 1.0. Version 1.1.0 (serial command protocol, baud switch for shaper captures, crash alert with the real jerk value),
+> the daemon, the macros, the installer and the analyzer were written and tested **in software only** (host-side
+> firmware logic tests, a software model of the hub on a fake serial port, Jinja rendering of the macros against a mock
+> printer, unit tests). Flash 1.1.0 and run the procedure in section 6 on the real printer before trusting it.
 
 ---
 
-## 1. Fast USB Quickstart (Recommended)
+## 1. Flash the firmware
 
-### Step 1: Plug in the ESP8266 via USB
-Connect the ESP8266 to your computer or Raspberry Pi with a USB data cable.
-
-### Step 2: Flash Firmware
 ```bash
-cd /Users/krishnanh/Projects/filasens/esp8266_sensor_hub/firmware
-pio run --target upload
+cd firmware
+pio run --target upload        # PlatformIO; board and flags are in platformio.ini
+pio device monitor -b 115200   # optional: you should see one JSON line per second
 ```
 
-### Step 3: Verify Serial Initialization
-Open the serial monitor at 115200 baud:
-```bash
-pio device monitor -b 115200
-```
-Upon boot, you will immediately see:
-```text
-=====================================================
- Indus3D ESP8266 Multi-Sensor Hub v1.0.0
- Bed Collision Monitor + Input Shaping + Chamber
-=====================================================
-[HW] Initializing ADXL345 on HSPI (CS=D8/GPIO15)... OK! (DEVID: 0xE5, Range: +-16g, 200 Hz)
-[HW] Initializing BME280 on I2C (SDA=D2, SCL=D1)... OK! (Addr: 0x76, Type: BME280)
-[CRASH] Detection threshold: 2000 mg (2.0 g delta)
-[SYSTEM] Running in PURE USB SERIAL MODE (Wi-Fi disabled).
-[SYSTEM] Instant boot: 200 Hz crash monitor + 1 Hz JSON telemetry over USB.
-```
-And every 1 second, it outputs live JSON telemetry:
+Every second the hub prints one line:
+
 ```json
-{"bed_accel":{"x_mg":145,"y_mg":-12,"z_mg":-980,"jerk_mg":18},"chamber":{"temp_c":26.4,"humidity_pct":43.1,"pressure_hpa":1012.8},"crash_detected":false,"uptime_sec":1}
+{"bed_accel":{"x_mg":145,"y_mg":-12,"z_mg":-980,"jerk_mg":18},"chamber":{"temp_c":26.4,"humidity_pct":43.1,"pressure_hpa":1012.8},"crash_detected":false,"crash_threshold_mg":2000,"adxl_ok":true,"bme_ok":true,"uptime_sec":1}
 ```
 
-### Step 4: Run Real-Time Telemetry Dashboard
-```bash
-python3 scripts/esp_bed_monitor_daemon.py
-```
-*(Auto-detects the USB serial port and displays live terminal metrics & logs to `chamber_telemetry.csv`)*
+`chamber` is `null` when the BME280 does not answer, so a dead sensor never shows up as 0 °C.
+Close the serial monitor before starting the daemon: only one program can hold the port.
 
-### Step 5: Run Automated Input Shaper Calibration over USB
-```bash
-python3 scripts/esp_shaper_analyzer.py --duration 7 --rate 1600
-```
-*(Sends `START_SHAPER 7 1600` over USB serial, streams high-frequency frames, computes Welch PSD, calculates optimal shapers, and generates the comparison plot!)*
+Serial commands (typed or sent by the daemon): `PING`, `STATUS`, `SET_CRASH_THRESHOLD <500-8000>`, `RESET_CRASH`,
+`START_SHAPER [duration_s 1-15] [rate_hz] [baud]`, `STOP_SHAPER`.
 
----
+## 2. Install on the host
 
-## 1. Prerequisites & Toolchain Setup
-
-### Option A: Using PlatformIO (Recommended)
-PlatformIO handles toolchain downloads, libraries, and compilation automatically.
+Requirements: Klipper + Moonraker, the **G-Code Shell Command** Klipper extension (KIAUH: *Advanced -> G-Code Shell
+Command*), a `[pause_resume]` section and PAUSE/RESUME macros (the Mainsail or Fluidd client config provides both),
+and a Python with `pyserial numpy scipy matplotlib`:
 
 ```bash
-# Clone or navigate to the firmware repository
-cd /path/to/filasens/esp8266_sensor_hub/firmware
-
-# Build firmware
-pio run
-
-# Connect ESP8266 via USB and upload
-pio run --target upload
-
-# Open serial monitor (115200 baud)
-pio device monitor -b 115200
+python3 -m venv helpers/filament_sensor/esp8266_sensor_hub/.venv
+helpers/filament_sensor/esp8266_sensor_hub/.venv/bin/pip install pyserial numpy scipy matplotlib
 ```
 
-### Option B: Using Arduino IDE
-1. Open Arduino IDE -> Preferences -> **Additional Board Manager URLs**:
-   `http://arduino.esp8266.com/stable/package_esp8266com_index.json`
-2. Install **esp8266 by ESP8266 Community** from Boards Manager.
-3. Install **ArduinoJson by Benoît Blanchon (version 6.x or 7.x)** from Library Manager.
-4. Select Board: **LOLIN(WEMOS) D1 R2 & mini** or **NodeMCU 1.0 (ESP-12E Module)**.
-5. CPU Frequency: **80 MHz** (or 160 MHz for maximum streaming headroom).
-6. Flash Size: **4MB (FS:2MB OTA:~1019KB)**.
-7. Open `firmware/src/main.cpp` and click **Upload**.
+The Python must be readable and executable by the user Klipper runs as (the shell commands run as that user). A
+virtual environment inside a `0700` home directory will not work: put it somewhere world-readable.
 
----
+Then, with the hub plugged in:
 
-## 2. Network & Moonraker Configuration
-
-### 2.1 Default Credentials & SoftAP Mode
-1. Edit `firmware/include/config.h` before flashing:
-   ```cpp
-   #define DEFAULT_WIFI_SSID    "Your_WiFi_Name"
-   #define DEFAULT_WIFI_PASS    "Your_WiFi_Password"
-   #define DEFAULT_MOONRAKER_IP "192.168.1.100"  // IP of your Raspberry Pi / Klipper host
-   #define DEFAULT_MOONRAKER_PORT 7125
-   ```
-2. If Wi-Fi fails to connect within 8 seconds, the ESP8266 will automatically activate **SoftAP Mode**:
-   - **SSID**: `ESP8266-BedHub-AP`
-   - **Password**: `bedhub1234`
-   - **IP Address**: `192.168.4.1`
-3. The hub also registers mDNS at: `http://esp8266-bedhub.local`.
-
-### 2.2 Moonraker Authorization Setup
-For the ESP8266 to pause the print on collision without requiring an API token, its IP address must be trusted by Moonraker.
-
-Open `moonraker.conf` on your Raspberry Pi:
-```ini
-[authorization]
-trusted_clients:
-    10.0.0.0/8
-    127.0.0.0/8
-    169.254.0.0/16
-    172.16.0.0/12
-    192.168.0.0/16
-    # Add your local network subnet or specific ESP8266 IP here
-```
-Restart Moonraker: `sudo systemctl restart moonraker`.
-
----
-
-## 3. Klipper Macro Installation
-
-1. Copy `klipper/bed_sensor_hub.cfg` into your Klipper configuration directory:
-   ```bash
-   cp /path/to/esp8266_sensor_hub/klipper/bed_sensor_hub.cfg ~/printer_data/config/
-   ```
-2. In your `printer.cfg`, add:
-   ```ini
-   [include bed_sensor_hub.cfg]
-   ```
-3. Update the global variables in `bed_sensor_hub.cfg` to match your printer:
-   ```ini
-   [gcode_macro _BED_HUB_VARS]
-   variable_esp_ip: "192.168.1.150"     # IP of your ESP8266
-   variable_park_x: 10.0                # Safe X parking position
-   variable_park_y: 220.0               # Safe Y parking position (away from print)
-   variable_zhop: 10.0                  # Lift nozzle 10mm on collision
-   ```
-4. Restart Klipper: `RESTART`.
-
----
-
-## 4. Bed Collision Monitor Operation (Mode A)
-
-In Mode A, the ESP8266 executes a deterministic **200 Hz sampling loop** evaluating instantaneous 3-axis jerk:
-$$\Delta a = \sqrt{(x_t - x_{t-1})^2 + (y_t - y_{t-1})^2 + (z_t - z_{t-1})^2}$$
-
-### Crash Event Sequence:
-1. When $|\Delta a| > 2000\text{ mg}$ (configurable):
-   - Firmware latches `crash_detected = true`.
-   - Sends HTTP POST `http://<moonraker_ip>:7125/printer/print/pause`.
-   - Emits G-code emergency command over USB Serial: `// action:paused` and `PAUSE`.
-   - Status LED flashes a rapid double-strobe.
-2. Klipper executes `BED_CRASH_HANDLER`:
-   - Lifts Z by 10mm.
-   - Retracts 2mm filament.
-   - Parks toolhead at safe corner (X=10, Y=220).
-   - Shuts off nozzle heater (prevents filament degradation).
-   - Sounds audible alarm beeps.
-3. Resuming Print:
-   - Inspect bed and clear physical obstruction.
-   - Click `BED_CRASH_RESUME` in Fluidd/Mainsail or issue `BED_CRASH_RESUME` in console.
-   - Automatically unlatches ESP8266 crash state, reheats nozzle, primes, and resumes.
-
-### Tuning the Jerk Threshold:
-- Normal printing accelerations and direction reversals typically produce jerk deltas between **250 mg and 700 mg**.
-- The default threshold is **2000 mg (2.0g delta in 5 ms)**, which cleanly differentiates between aggressive infill direction changes and a physical nozzle/bed collision or detached print jam.
-- Adjust threshold dynamically without reflashing:
-  ```bash
-  # Via HTTP REST API
-  curl -X POST http://192.168.1.150/config -d '{"threshold_mg": 2200}'
-
-  # Via Serial CLI
-  SET_THRESHOLD 2200
-  ```
-
----
-
-## 5. Automated Input Shaping Calibration (Mode B)
-
-### Procedure:
-1. Ensure your printer is homed (`G28`).
-2. Run the Python analysis tool from your laptop or Raspberry Pi:
-   ```bash
-   python3 scripts/esp_shaper_analyzer.py --ip 192.168.1.150 --duration 7 --rate 1600
-   ```
-3. Simultaneously trigger the Klipper frequency sweep in Fluidd/Mainsail:
-   ```gcode
-   BED_SHAPER_CALIBRATE DURATION=7
-   ```
-4. The analyzer captures 11,200 samples over high-speed TCP socket, computes Power Spectral Density (PSD), evaluates ZV, MZV, ZVD, EI, 2HUMP_EI, 3HUMP_EI shaper transfer functions, and outputs:
-   - A tabular comparison report with vibration reduction percentages.
-   - A 4-panel publication-quality Matplotlib chart: `shaper_calibration_bed_y.png`.
-   - A ready-to-paste Klipper config snippet: `bed_input_shaper_y.cfg`.
-5. Paste the recommended shaper settings into your `printer.cfg`:
-   ```ini
-   [input_shaper]
-   shaper_type_y = mzv
-   shaper_freq_y = 48.1
-   ```
-
----
-
-## 6. Real-Time Chamber Telemetry Monitoring
-
-To continuously view real-time bed vibrations and chamber temperature/humidity/pressure:
 ```bash
-python3 scripts/esp_bed_monitor_daemon.py --ip 192.168.1.150 --log chamber_log.csv
+cd helpers/filament_sensor/esp8266_sensor_hub
+./install_hub.py --dry-run                 # shows every step, changes nothing
+./install_hub.py [--device /dev/ttyUSB0] [--mqtt localhost]
 ```
 
----
+This does, idempotently:
 
-## 7. Troubleshooting
+| Step | Result |
+|---|---|
+| udev | `/etc/udev/rules.d/99-esp8266-bedhub.rules`: symlink `/dev/esp8266_bed_hub`, group `dialout`, mode `0660`, ModemManager told to ignore the device. The adapter is matched by its USB serial number, or by the **physical USB port** if it has none (CH340 boards). In that case keep it in the same port, or re-run the installer after moving it. |
+| systemd | `esp8266_bed_hub.service` (runs as you, `dialout` as supplementary group, restarts on failure, state in `/var/lib/indus3d/bed_hub`) |
+| Klipper | `<config>/esp8266_sensor_hub/bed_sensor_hub.cfg` (kept if it exists), `bed_sensor_hub_shell.cfg` (regenerated), and two `[include]` lines in `printer.cfg` |
+| Moonraker | `<config>/esp8266_sensor_hub/moonraker_bed_hub.conf` and its `[include]` in `moonraker.conf` |
 
-| Symptom | Cause | Solution |
+Backups of `printer.cfg` / `moonraker.conf` are written next to them (`*.indus3d_bak_<time>`) before any change.
+NixOS or other declarative hosts: `./install_hub.py --print-only` prints the udev rule and the unit to translate into
+your configuration, and `--no-udev --no-service` does just the config files.
+
+### Manual include instructions (instead of the installer)
+
+1. Copy `klipper/bed_sensor_hub.cfg` to `~/printer_data/config/esp8266_sensor_hub/`; set `variable_printer_cfg` and
+   `variable_outdir` in `_BED_HUB_VARS`.
+2. Copy `klipper/bed_sensor_hub_shell.cfg.in` to `bed_sensor_hub_shell.cfg` and replace `@PYTHON@`, `@SCRIPTS@`
+   (the absolute `scripts/` directory) and `@HUB_URL@` (`http://127.0.0.1:7127`).
+3. `printer.cfg`: `[include esp8266_sensor_hub/bed_sensor_hub.cfg]` and `[include esp8266_sensor_hub/bed_sensor_hub_shell.cfg]`.
+4. `moonraker.conf`: `[include esp8266_sensor_hub/moonraker_bed_hub.conf]`.
+5. Install and enable the unit from `esp8266_bed_hub.service.in` and the udev rule (`install_hub.py --print-only`).
+6. `FIRMWARE_RESTART` Klipper and `sudo systemctl restart moonraker`.
+
+### Moonraker
+
+* The daemon runs on the printer's own host and calls Moonraker on `127.0.0.1:7125`. Your `[authorization]` must trust
+  `127.0.0.0/8` (the stock Mainsail and Fluidd configs do). **Do not add a second `[authorization]` section**: Moonraker
+  would refuse to start. Add Fluidd/Mainsail origins to your existing `cors_domains` only if you open the UI from
+  another machine.
+* The chamber/crash "sensor" card needs an MQTT broker (Moonraker's `[sensor]` component is MQTT-only), for example
+  `sudo apt install mosquitto`, plus `--mqtt localhost` on the daemon (the installer's `--mqtt` flag). Fluidd shows the
+  card in its Sensors panel; recent Mainsail versions list Moonraker sensors too (not verified here). Without a broker
+  everything else works, and `BED_HUB_STATUS` prints the same values.
+
+## 3. Daily use
+
+| Console command / button | Does |
+|---|---|
+| `BED_HUB_STATUS` | prints hub connection, chamber, bed accel, jerk, threshold, crash latch |
+| `BED_HUB_RESET_CRASH` | clears the hub's crash latch ("Reset Bed Crash Latch") |
+| `SET_BED_CRASH_THRESHOLD VALUE=2500` | sets the crash threshold in mg (500-8000), remembered across hub resets |
+| `BED_CRASH_RESUME` | after a crash: reheat to the saved targets, re-prime, clear the latch, restore the toolhead state and resume |
+| `BED_SHAPER_CALIBRATE_Y [APPLY=1] [RATE=1600]` | Y input shaper calibration with the bed accelerometer (section 5) |
+
+Mainsail and Fluidd name their macro buttons after the macros; Klipper has no separate display label.
+Command line (same thing the macros call): `scripts/esp_hub_ctl.py status | reset-crash | set-threshold 2500 | shaper-capture ...`.
+Logs: `journalctl -u esp8266_bed_hub -f`. State and a size-rotated `telemetry.csv`: `/var/lib/indus3d/bed_hub/`.
+
+## 4. How a crash is handled
+
+1. The ESP samples the ADXL345 at 200 Hz; when the 3-axis jerk exceeds the threshold (default 2000 mg) it latches and
+   prints `// Klipper: BED_CRASH_DETECTED jerk=2450 mg (accel=[...] mg) -> ...` at once.
+2. The daemon reads that line (or the latch in the next telemetry line as a fallback). **Only while a print is
+   running** it posts `/printer/print/pause` to Moonraker, retrying, and then runs `BED_CRASH_HANDLER JERK=2450`.
+   While idle or already paused it only logs: the handler moves the toolhead and must never run on an unhomed printer.
+   A second alert within 10 s is treated as the same crash.
+3. `BED_CRASH_HANDLER`: saves the hotend/bed targets, `SAVE_GCODE_STATE`, `PAUSE` (skipped if already paused),
+   retracts 2 mm, lifts Z by up to 10 mm (never beyond the Z maximum), parks at X10 Y220 (clamped to the axis ranges),
+   switches the hotend heater off (the bed stays on), and beeps three times if you have an `[output_pin beeper]`.
+   If the axes are not homed it does not move anything. All of these values are variables in `_BED_HUB_VARS`.
+4. The Indus3D plugin raises a notification and an audit entry, and holds every corrective command until the latch is
+   cleared (so a queued `M104` cannot reheat the hotend that was just switched off).
+5. `BED_CRASH_RESUME` (after you inspected the bed) reheats bed and hotend to the saved targets, re-primes, clears the
+   latch, restores the toolhead state and resumes.
+
+Tuning: normal printing produces jerk spikes of roughly 250-700 mg; the default of 2000 mg separates that from a real
+collision. If a gentle tap does not trigger it, lower it for the test (`SET_BED_CRASH_THRESHOLD VALUE=1200`) and put it
+back afterwards.
+
+## 5. Y input shaper calibration
+
+`BED_SHAPER_CALIBRATE_Y` (printer idle, not printing or paused): homes if needed, moves to the bed centre, switches
+the active input shaper off, starts the capture, then drives the bed along Y in a stepped sweep from 5 to 120 Hz and
+restores the acceleration limits and the shaper. At each frequency *f* the amplitude is `min(max_amp, max_accel / (16 f^2))`
+with the matching acceleration, so each half-cycle lasts exactly `1 / (2 f)`.
+**At the highest frequencies the amplitude is a few hundredths of a millimetre**: the sweep excites the low and
+middle resonances well and the top end only weakly (limited by `sweep_max_accel`, default 7000 mm/s^2). If your bed
+resonates above about 70 Hz, raise it carefully.
+
+The capture (at most 15 s; the macro refuses a sweep that does not fit) runs in the daemon and the analysis in the same
+shell command:
+
+1. the hub switches its serial link to a faster baud for the session (1600 Hz needs about 240 kbit/s) and back after;
+2. the CSV is resampled onto a uniform grid, a Welch PSD is taken over 5-120 Hz, the peak and the damping ratio
+   (half-power bandwidth, default 0.1) are estimated;
+3. for ZV, MZV, ZVD, EI, 2HUMP_EI and 3HUMP_EI the shaper frequency is scanned and the residual vibration
+   `V(w) = exp(-z w t_N) * sqrt((sum A_i e^{z w t_i} cos(w_d t_i))^2 + (sum A_i e^{z w t_i} sin(w_d t_i))^2)` is evaluated
+   over damping ratios 0.075/0.1/0.15; the choice minimises `smoothing * (vibr^1.5 + 0.2 vibr + 0.01)`;
+4. the maximum acceleration comes from the smoothing limit (0.12 mm at 5 mm/s corner speed);
+5. output in `variable_outdir`: `shaper_calibration_bed_y.png`, `bed_input_shaper_y.cfg`, the CSV, and the report in
+   the console. With `APPLY=1` (or `variable_shaper_autoapply: 1`) `[input_shaper]` in `printer.cfg` is updated
+   (`shaper_type_y: mzv`, `shaper_freq_y: 42.6`; a backup is written first) and you run `RESTART`.
+
+If a previous `SHAPER_CALIBRATE` + `SAVE_CONFIG` left an `[input_shaper]` block under `#*# <---- SAVE_CONFIG ---->`,
+Klipper gives that block precedence over the edit; the analyzer warns and you delete those `#*#` lines.
+The shaper definitions are the published textbook forms; Klipper's `SHAPER_CALIBRATE` uses refined coefficient fits, so
+numbers can differ slightly. Use Klipper's own tools wherever an accelerometer can sit on the toolhead.
+
+## 6. End-to-end crash test (do this once, with the printer on)
+
+1. Check: `BED_HUB_STATUS` shows `hub connected`, a chamber temperature and a small jerk; `systemctl status
+   esp8266_bed_hub` is active; `ls -l /dev/esp8266_bed_hub` exists; the Indus3D "Bed Sensor Hub" card says *live*.
+2. **Dry run (idle printer):** tap the bed. The daemon logs `crash response: ignored: no print running (standby)` and
+   clears the hub's latch itself so it stays armed; the macro does not run and the toolhead does not move.
+3. Start a print (or any file that stays above the bed for a while) with bed and hotend hot. Once it prints, lower the
+   threshold if needed (`SET_BED_CRASH_THRESHOLD VALUE=1200`) and **tap the bed**.
+4. Expected within about a second: Mainsail shows *Paused*; the console shows `BED COLLISION: ... jerk N mg`; the
+   toolhead retracts, lifts and parks at X10 Y220; the hotend cools down, the bed stays hot; the Indus3D card turns red
+   with the jerk value; you receive the notification; `journalctl -u esp8266_bed_hub` shows the pause and the handler.
+5. Inspect the bed, then run `BED_CRASH_RESUME`. Expected: bed and hotend reheat to their old targets, the nozzle is
+   primed, the latch clears (card back to *live*), the toolhead returns and the print continues.
+6. Put the threshold back (`SET_BED_CRASH_THRESHOLD VALUE=2000`).
+
+Failure checks worth doing once: stop Moonraker and tap the bed during a print (the daemon cannot pause; the Indus3D
+notification then says `FAILED to pause ... PAUSE THE PRINT YOURSELF`); pull the USB cable (daemon reconnects by itself
+when it is back, and the threshold is re-applied; the card says *hub unplugged* meanwhile).
+
+## 7. Indus3D integration
+
+The backend plugin `esp_bed_hub` (default `http://127.0.0.1:7127`; `INDUS3D_BED_HUB_URL=` empty disables) polls the
+daemon once a second and: stores every new sample in SQLite table `telemetry_samples` (`timestamp_utc` ISO-8601,
+`chamber_temp_c`, `chamber_humidity_pct`, `chamber_pressure_hpa`, `bed_accel_x_mg`, `bed_accel_y_mg`, `bed_accel_z_mg`,
+`bed_jerk_mg`, `crash_detected`; written in batches, kept 7 days: `INDUS3D_BED_TELEMETRY_DAYS`,
+`INDUS3D_BED_TELEMETRY_DB=0` to switch storage off); feeds `/api/v1/environment`, `chamber_environment` and `/metrics`;
+raises the crash notification and audit entry; holds corrective commands while the crash is latched
+(`INDUS3D_BED_CRASH_HOLD=0` to disable); and shows the dashboard card.
+Optional hook, **off by default**: `INDUS3D_BED_CRASH_EXCLUDE_OBJECT=1` sends `EXCLUDE_OBJECT NAME=<current object>`
+after a crash while the print is paused, so the resume skips that object. An acceleration spike says the bed was hit,
+not which object caused it, so enable this only if you know your failure mode.
+
+## 8. Troubleshooting
+
+| Symptom | Cause | Fix |
 |---|---|---|
-| `[HW] Initializing ADXL345 FAILED!` | Wiring loose or incorrect CS pin | Verify HSPI wiring: D5(SCK), D6(MISO), D7(MOSI), D8(CS). Ensure ribbon cable is <= 3 inches. |
-| ESP8266 will not boot / enters flash mode | D8 (GPIO15) pulled HIGH externally | Remove any external pull-up on D8. GPIO15 must be LOW during boot. |
-| `[HW] Initializing BME280 FAILED!` | Wrong I2C pins or address | Verify SDA is D2 (GPIO4) and SCL is D1 (GPIO5). Check address (0x76 vs 0x77). |
-| Moonraker pause not executing on collision | Subnet not in `trusted_clients` | Add ESP8266 IP or subnet (`192.168.0.0/16`) to `trusted_clients` in `moonraker.conf`. |
-| High packet drops during input shaping | Wi-Fi interference | Ensure strong RSSI (>-70 dBm) or use transparent USB Serial fallback. |
+| `BED_HUB_STATUS`: cannot reach the hub daemon | service not running | `systemctl status esp8266_bed_hub`, `journalctl -u esp8266_bed_hub` |
+| daemon up, `hub NOT CONNECTED` | USB cable/port, serial monitor open, wrong device | close other programs on the port; `ls /dev/serial/by-id`; re-run `install_hub.py --device ...` |
+| symlink `/dev/esp8266_bed_hub` missing after moving the cable | rule matches the old USB port (no serial number) | re-run `install_hub.py` |
+| `hub` data but `chamber: null` | BME280 not answering | check SDA/SCL on GPIO0/GPIO2, address 0x76/0x77, 3V3 |
+| board does not start from power-up | GPIO0/GPIO2 held low | see wiring doc section 3.1 (pull-ups) |
+| macros: `reset_hub_crash is not configured` | shell cfg not included, or the G-Code Shell Command extension missing | include `bed_sensor_hub_shell.cfg`; install the extension from KIAUH |
+| shaper command prints a Python import error | the Python in the shell cfg lacks numpy/scipy/matplotlib | install them there; re-run the installer with `--python` |
+| shaper capture "loss" high | serial overruns | lower `RATE` to 800; use a short, good USB cable |
+| calibration changed nothing after `APPLY=1` | an auto-saved `[input_shaper]` block overrides it | delete those `#*#` lines (the report warns) |
+| Moonraker will not start after editing | a second `[authorization]` section | remove it; only the include of `moonraker_bed_hub.conf` is needed |

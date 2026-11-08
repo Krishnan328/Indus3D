@@ -1,4 +1,5 @@
 #include "crash_detector.h"
+#include "config.h"
 #include <math.h>
 
 CrashDetector::CrashDetector(uint16_t threshold_mg)
@@ -7,7 +8,7 @@ CrashDetector::CrashDetector(uint16_t threshold_mg)
       _crash_latched(false),
       _window_start_ms(0),
       _window_max_jerk(0),
-      _last_trigger_ms(0) {
+      _last_trigger_ms(0), _ever_triggered(false) {
     memset(&_prev_sample, 0, sizeof(_prev_sample));
     memset(&_last_crash, 0, sizeof(_last_crash));
     memset(&_telemetry, 0, sizeof(_telemetry));
@@ -61,8 +62,9 @@ bool CrashDetector::update(const AccelDataMg& current_sample) {
         _crash_latched = true;
 
         // Check cooldown for re-triggering Moonraker pause actions
-        if (now - _last_trigger_ms >= 3000) {
+        if (!_ever_triggered || now - _last_trigger_ms >= CRASH_COOLDOWN_MS) {
             new_crash_event = true;
+            _ever_triggered = true;
             _last_trigger_ms = now;
 
             _last_crash.detected = true;
@@ -90,4 +92,6 @@ void CrashDetector::resetCrash() {
     _crash_latched = false;
     _last_crash.detected = false;
     _window_max_jerk = 0;
+    _has_prev_sample = false;   // do not compare the first new sample with a pre-reset one
+    _ever_triggered = false;    // an operator acknowledged the crash: a new one may be reported at once
 }

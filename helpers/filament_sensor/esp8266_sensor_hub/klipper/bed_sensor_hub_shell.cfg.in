@@ -1,0 +1,31 @@
+# =====================================================================
+# Shell commands used by bed_sensor_hub.cfg  (template: the installer replaces the upper-case placeholders in the commands below
+# and writes bed_sensor_hub_shell.cfg next to it)
+#
+# They need Klipper's "G-Code Shell Command" extension (KIAUH: Advanced -> G-Code Shell Command).
+# Output appears in the Mainsail/Fluidd console (verbose: True). Each command only talks to the
+# hub daemon on 127.0.0.1; none of them touches the serial port itself.
+# =====================================================================
+
+[gcode_shell_command reset_hub_crash]
+command: @PYTHON@ @SCRIPTS@/esp_hub_ctl.py --url @HUB_URL@ reset-crash
+timeout: 10.0
+verbose: True
+
+[gcode_shell_command hub_status]
+command: @PYTHON@ @SCRIPTS@/esp_hub_ctl.py --url @HUB_URL@ status
+timeout: 10.0
+verbose: True
+
+# PARAMS=<mg> is appended: RUN_SHELL_COMMAND CMD=set_hub_threshold PARAMS="2500"
+[gcode_shell_command set_hub_threshold]
+command: @PYTHON@ @SCRIPTS@/esp_hub_ctl.py --url @HUB_URL@ set-threshold
+timeout: 10.0
+verbose: True
+
+# Capture + resonance analysis (+ optional printer.cfg update); needs numpy, scipy and matplotlib
+# in @PYTHON@. PARAMS="--duration 9 --rate 1600 --analyze --axis Y --outdir <dir> [--apply-to <printer.cfg>]"
+[gcode_shell_command run_bed_shaper]
+command: @PYTHON@ @SCRIPTS@/esp_hub_ctl.py --url @HUB_URL@ shaper-capture
+timeout: 90.0
+verbose: True

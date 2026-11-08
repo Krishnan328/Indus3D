@@ -21,7 +21,10 @@ import sys
 
 # Add scripts directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from esp_shaper_analyzer import InputShaperModel, analyze_resonances, PACKET_FORMAT, PACKET_SIZE
+import tempfile
+from esp_shaper_analyzer import (InputShaperModel, analyze_resonances, PACKET_FORMAT, PACKET_SIZE,
+                                 update_printer_cfg_text, apply_to_printer_cfg, pick_axis, run_analysis,
+                                 estimate_zeta, save_klipper_csv)
 
 
 class TestSensorHubMath(unittest.TestCase):
@@ -122,6 +125,148 @@ class TestSensorHubMath(unittest.TestCase):
         best = analysis["best"]
         self.assertGreater(best["vibration_reduction_pct"], 80.0,
                            msg="Recommended shaper should achieve > 80% vibration reduction")
+
+
+def _resonance(fs, dur, f0, zeta, seed=1, axis=2):
+    """Y-axis free ring-down excited by random impulses -> a damped resonance at f0."""
+    rng = np.random.default_rng(seed)
+    n = int(fs * dur)
+    t = np.arange(n) / fs
+    k = np.arange(int(0.5 * fs)) / fs
+    h = np.exp(-zeta * 2 * np.pi * f0 * k) * np.sin(2 * np.pi * f0 * np.sqrt(1 - zeta ** 2) * k)
+    y = np.convolve(rng.standard_normal(n), h)[:n] * 0.02
+    cols = [rng.standard_normal(n) * 1e-4 for _ in range(3)]
+    cols[axis - 1] = y
+    cols[2] += -1.0 if axis != 3 else 0
+    return np.column_stack([t] + cols)
+
+
+class TestShaperPhysics(unittest.TestCase):
+    def test_all_shapers_notch_at_design_frequency(self):
+        for st in ["ZV", "MZV", "ZVD", "EI", "2HUMP_EI", "3HUMP_EI"]:
+            A, t = InputShaperModel.get_shaper_params(st, 45.0, 0.1)
+            v = InputShaperModel.transfer_function(A, t, np.array([45.0]), 0.1)[0]
+            tol = 0.06 if st in ("ZV", "MZV", "ZVD") else 0.051
+            self.assertLess(v, tol, st)
+
+    def test_robustness_ordering(self):
+        """Wider shapers tolerate a mistuned resonance better (at +-20 %)."""
+        f = np.array([36.0, 54.0])
+        worst = {}
+        for st in ["ZV", "ZVD", "EI", "2HUMP_EI", "3HUMP_EI"]:
+            A, t = InputShaperModel.get_shaper_params(st, 45.0, 0.1)
+            worst[st] = InputShaperModel.transfer_function(A, t, f, 0.1).max()
+        self.assertLess(worst["ZVD"], worst["ZV"])
+        self.assertLess(worst["3HUMP_EI"], worst["EI"])
+
+    def test_smoothing_and_accel_monotonic(self):
+        A, t = InputShaperModel.get_shaper_params("ZV", 50.0)
+        A2, t2 = InputShaperModel.get_shaper_params("3HUMP_EI", 50.0)
+        self.assertLess(InputShaperModel.smoothing(A, t), InputShaperModel.smoothing(A2, t2))
+        self.assertGreater(InputShaperModel.max_accel(A, t), InputShaperModel.max_accel(A2, t2))
+        a = InputShaperModel.max_accel(A2, t2)
+        self.assertLessEqual(InputShaperModel.smoothing(A2, t2, a), 0.1205)
+
+    def test_recovers_frequency_and_damping(self):
+        data = _resonance(1600, 20, 42.0, 0.08)
+        an = analyze_resonances(data, axis_col=2)
+        self.assertAlmostEqual(an["primary_freq"], 42.0, delta=1.5)
+        self.assertAlmostEqual(an["zeta"], 0.08, delta=0.04)
+        b = an["best"]
+        self.assertGreater(b["vibration_reduction_pct"], 85)
+        self.assertAlmostEqual(b["freq"], 42.0, delta=8)
+
+    def test_nonuniform_timestamps_are_resampled(self):
+        data = _resonance(1600, 10, 55.0, 0.1)
+        rng = np.random.default_rng(3)
+        data[:, 0] += rng.uniform(-0.0001, 0.0001, len(data))
+        data[:, 0].sort()
+        data = np.delete(data, np.arange(4000, 4010), axis=0)          # a gap from dropped packets
+        an = analyze_resonances(data, axis_col=2)
+        self.assertTrue(an["sampling"]["resampled"])
+        self.assertAlmostEqual(an["primary_freq"], 55.0, delta=2)
+
+    def test_auto_axis_picks_the_excited_axis(self):
+        self.assertEqual(pick_axis(_resonance(1600, 5, 40, 0.1, axis=1)), 1)
+        self.assertEqual(pick_axis(_resonance(1600, 5, 40, 0.1, axis=2)), 2)
+        self.assertEqual(pick_axis(_resonance(1600, 5, 40, 0.1, axis=2), "x"), 1)
+
+    def test_too_short_capture_is_rejected(self):
+        with self.assertRaises(ValueError):
+            analyze_resonances(np.column_stack([np.arange(20) / 1600, np.zeros((20, 3))]), axis_col=2)
+
+
+CFG = """[printer]
+kinematics: corexy
+max_accel: 3000
+
+[input_shaper]
+shaper_type_x: zv
+shaper_freq_x: 60.0
+damping_ratio_y: 0.05
+
+[mcu]
+serial: /dev/x
+
+#*# <---- SAVE_CONFIG ---->
+#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.
+#*#
+#*# [probe]
+#*# z_offset = 1.2
+"""
+
+
+class TestPrinterCfgUpdate(unittest.TestCase):
+    def test_updates_only_the_axis_keys(self):
+        new, w = update_printer_cfg_text(CFG, "Y", "mzv", 42.6)
+        self.assertIn("shaper_type_y: mzv", new)
+        self.assertIn("shaper_freq_y: 42.6", new)
+        for keep in ("shaper_type_x: zv", "shaper_freq_x: 60.0", "damping_ratio_y: 0.05", "max_accel: 3000",
+                     "z_offset = 1.2", "serial: /dev/x"):
+            self.assertIn(keep, new)
+        self.assertEqual(w, [])
+        sec = new.split("[input_shaper]")[1].split("[mcu]")[0]
+        self.assertIn("shaper_freq_y", sec)                         # inside the right section
+
+    def test_idempotent_and_replaces_existing(self):
+        once, _ = update_printer_cfg_text(CFG, "Y", "mzv", 42.6)
+        twice, _ = update_printer_cfg_text(once, "Y", "ei", 50.0)
+        self.assertEqual(twice.count("shaper_type_y"), 1)
+        self.assertIn("shaper_type_y: ei", twice)
+        again, _ = update_printer_cfg_text(twice, "Y", "ei", 50.0)
+        self.assertEqual(twice, again)
+
+    def test_adds_section_when_missing(self):
+        new, _ = update_printer_cfg_text("[printer]\nkinematics: cartesian\n", "Y", "zv", 33.0)
+        self.assertIn("[input_shaper]\nshaper_type_y: zv\nshaper_freq_y: 33.0", new)
+
+    def test_warns_about_autosaved_override(self):
+        cfg = CFG.replace("#*# [probe]", "#*# [input_shaper]\n#*# shaper_type_y = ei\n#*# shaper_freq_y = 50.0\n#*#\n#*# [probe]")
+        new, w = update_printer_cfg_text(cfg, "Y", "mzv", 42.6)
+        self.assertEqual(len(w), 1)
+        self.assertIn("SAVE_CONFIG", w[0])
+        self.assertIn("#*# shaper_type_y = ei", new)                # never touches the autosave block
+
+    def test_backup_and_apply(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "printer.cfg")
+            open(p, "w").write(CFG)
+            apply_to_printer_cfg(p, "Y", "mzv", 42.6)
+            names = os.listdir(d)
+            self.assertEqual(len([n for n in names if "indus3d_bak" in n]), 1)
+            self.assertIn("shaper_freq_y: 42.6", open(p).read())
+
+    def test_run_analysis_end_to_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            csv = os.path.join(d, "c.csv")
+            save_klipper_csv(_resonance(1600, 12, 42.6, 0.08), csv)
+            cfg = os.path.join(d, "printer.cfg")
+            open(cfg, "w").write(CFG)
+            rc = run_analysis(csv, "Y", d, apply_to=cfg)
+            self.assertEqual(rc, 0)
+            self.assertTrue(os.path.exists(os.path.join(d, "shaper_calibration_bed_y.png")))
+            self.assertIn("[input_shaper]", open(os.path.join(d, "bed_input_shaper_y.cfg")).read())
+            self.assertRegex(open(cfg).read(), r"shaper_type_y: \w+")
 
 
 if __name__ == "__main__":

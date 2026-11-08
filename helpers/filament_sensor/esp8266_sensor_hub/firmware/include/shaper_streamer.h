@@ -24,8 +24,18 @@ public:
 
     void begin();
 
-    // Start a high-speed sampling session
-    bool startSession(uint8_t duration_s = 5, uint16_t rate_hz = 1600, bool stream_to_serial = false);
+    // Start a high-speed sampling session.
+    //   rate_hz        requested ADXL rate; one of 200/400/800/1600/3200, anything else -> 1600.
+    //                  When streaming over serial it is clamped to what the link can carry.
+    //   serial_baud    0 / 115200 = keep the baud; 230400/460800/921600 = switch for the session
+    //                  (announced in the STARTED line, restored after the ENDED line).
+    bool startSession(uint8_t duration_s = 5, uint16_t rate_hz = 1600, bool stream_to_serial = false,
+                      uint32_t serial_baud = 0);
+
+    // Largest supported rate <= requested that `baud` can sustain with 15-byte packets
+    // (pure function, unit-tested on the host).
+    static uint16_t pickRate(uint16_t requested, uint32_t baud, bool over_serial);
+    static bool isAllowedBaud(uint32_t baud);
     void stopSession();
 
     void setStreamToSerial(bool enable) { _stream_to_serial = enable; }
@@ -57,6 +67,7 @@ private:
     uint32_t _next_sample_us;
     uint32_t _sample_count;
     uint16_t _packet_seq;
+    bool _baud_switched;
 
     // Batch buffer for TCP transmission efficiency (batch 16 packets = 240 bytes)
     static constexpr uint8_t BATCH_SIZE = 16;

@@ -15,11 +15,11 @@ This document provides complete electrical wiring, pinout tables, signal routing
 | **ADXL345 MOSI**| SDA / MOSI| **GPIO13** | **D7** | Hardware SPI (HSPI) | Master Out / Slave In |
 | **ADXL345 VCC** | VCC | 3V3 / 5V | 3V3 or 5V | Power | Use 3V3 for raw chip; 5V if module has 662K LDO |
 | **ADXL345 GND** | GND | GND | GND | Power | Star ground back to ESP8266 GND |
-| **BME280 SCL**  | SCL | **GPIO5** | **D1** | Software / Hard I2C| Standard I2C clock (100 kHz) |
-| **BME280 SDA**  | SDA | **GPIO4** | **D2** | Software / Hard I2C| Standard I2C data |
+| **BME280 SCL**  | SCL | **GPIO2** | **D4** | Software I2C | Clock (100 kHz). Boot strap pin: must be HIGH at power-up (the module's pull-up does that) |
+| **BME280 SDA**  | SDA | **GPIO0** | **D3** | Software I2C | Data. Boot strap pin (LOW = flash mode): the module's pull-up keeps it HIGH. Also the NodeMCU FLASH button |
 | **BME280 VCC**  | VCC | 3V3 | 3V3 | Power | 3.3V regulated power rail |
 | **BME280 GND**  | GND | GND | GND | Power | Ground return |
-| **Status LED**  | Built-in | **GPIO2** | **D4** | Active LOW | Flashes on boot, heartbeat, crash latch, shaper |
+| **Status LED**  | Built-in | GPIO2 | D4 | Active LOW | **Not driven by the firmware**: GPIO2 is the BME280's clock line, the LED just follows it |
 
 ---
 
@@ -37,13 +37,13 @@ This document provides complete electrical wiring, pinout tables, signal routing
     +--------------+   |                   |   +---------------------+
     |  VCC (3.3V)  |<--| 3V3           3V3 |--->| VCC (3.3V)          |
     |  GND         |<--| GND           GND |--->| GND                 |
-    |  CS (D8)     |<--| GPIO15 (D8)       |   |                     |
+    |  CS (D0)     |<--| GPIO16 (D0)       |   |                     |
     |  SCK (D5)    |<--| GPIO14 (D5)       |   |                     |
     |  MISO (D6)   |-->| GPIO12 (D6)       |   |                     |
     |  MOSI (D7)   |<--| GPIO13 (D7)       |   |                     |
     +--------------+   |                   |   |                     |
-                       |        GPIO5 (D1) |--->| SCL                 |
-                       |        GPIO4 (D2) |<-->| SDA                 |
+                       |        GPIO2 (D4) |--->| SCL                 |
+                       |        GPIO0 (D3) |<-->| SDA                 |
                        +-------------------+   +---------------------+
                                  |
                                  v
@@ -56,13 +56,13 @@ This document provides complete electrical wiring, pinout tables, signal routing
 
 ## 3. Critical Hardware & Boot-Strap Considerations
 
-### 3.1 ESP8266 GPIO15 (D8) Boot Strapping
-- On all ESP8266 microcontrollers, **GPIO15 is a hardware boot-mode strapping pin**.
-- During power-on-reset (POR), if GPIO15 is sampled `HIGH`, the ESP8266 will fail to boot from flash and enter SDIO/slave mode.
-- Most NodeMCU and Wemos D1 Mini boards feature an onboard 10 kΩ or 12 kΩ pull-down resistor from GPIO15 to GND to guarantee a `LOW` state during boot.
-- The ADXL345 Chip Select (`CS`) line is **active LOW**. Having GPIO15 naturally pulled down during boot means the ADXL345 is momentarily selected while the ESP8266 ROM executes.
-- **Firmware Handling**: The firmware's `setup()` explicitly initializes GPIO15 as an `OUTPUT` and drives it `HIGH` within the first 50 µs of user code execution to deselect the ADXL345 before any SPI transactions occur.
-- **Rule**: Do **NOT** install an external pull-up resistor on the D8/GPIO15 line!
+### 3.1 Boot-strap pins used by this wiring
+The chip select is on **GPIO16 (D0)** and the BME280 on **GPIO0 / GPIO2**, so nothing on the bus touches GPIO15 (which must stay LOW at boot; leave D8 unconnected and do not add a pull-up to it). This pin assignment is the one verified on the real hardware.
+
+- **GPIO0 (SDA)** is the flash-mode strap: LOW at power-up means "download mode". The BME280 breakout's pull-up holds it HIGH. A breakout without pull-ups, or a very long SDA cable, can leave it floating: if the board will not start from power-up but works after pressing reset, add a 4.7 kΩ pull-up from GPIO0 to 3V3.
+- **GPIO2 (SCL)** must be HIGH at power-up as well (same pull-up).
+- Uploading firmware with `pio run --target upload` toggles these lines through the USB-serial chip as usual; disconnect nothing.
+- **GPIO16 (CS)** has no strap function. It is, however, the deep-sleep wake pin and has no internal pull-up: the ADXL345 driver drives it HIGH (deselected) when it starts (`begin()`), a few hundred milliseconds after power-up.
 
 ### 3.2 Cable Length & High-Speed SPI Signal Integrity
 - The ADXL345 operates at **5 MHz SPI** in this firmware to minimize CPU cycle consumption during 200 Hz crash monitoring and 1600 Hz input shaping.
@@ -75,6 +75,6 @@ This document provides complete electrical wiring, pinout tables, signal routing
 - If using the **GY-291** breakout module, it typically incorporates an onboard **662K 3.3V LDO regulator**. If powering via 5V, ensure the solder jumper on the back of the GY-291 (if present) is properly configured for your supply voltage. Connecting 3.3V directly to the module's 3V3 input is recommended to bypass LDO dropout voltage.
 
 ### 3.4 BME280 I2C Bus & Address Selection
-- The BME280 communicates over I2C on GPIO4 (`D2`, SDA) and GPIO5 (`D1`, SCL).
+- The BME280 communicates over (software) I2C on GPIO0 (`D3`, SDA) and GPIO2 (`D4`, SCL).
 - The firmware automatically scans both `0x76` (SDO pin to GND) and `0x77` (SDO pin to VCC).
 - The BME280 cable can be longer (up to 30–50 cm) to allow flexible placement inside the printer enclosure, well away from direct hotbed radiant heat or cooling fan exhaust.

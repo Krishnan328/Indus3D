@@ -55,4 +55,5 @@ private:
 
     // Cooldown to avoid flooding HTTP pause calls
     uint32_t _last_trigger_ms;
+    bool _ever_triggered;
 };

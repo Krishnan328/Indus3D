@@ -50,13 +50,20 @@
 #define SHAPER_MAX_RATE_HZ          3200    // 3200 Hz max rate
 #define SHAPER_DEFAULT_DURATION_S   5       // 5 seconds duration
 #define SHAPER_MAX_DURATION_S      15       // 15 seconds max duration
+
+// USB serial. 115200 baud carries only ~768 of the 15-byte shaper packets per second, so a
+// 1600 Hz stream cannot be sent at the default baud: START_SHAPER can ask for a faster baud for
+// the duration of the session (see shaper_streamer.cpp) and the rate is clamped to what the
+// link can actually carry.
+#define SERIAL_DEFAULT_BAUD         115200
+#define SERIAL_PAYLOAD_EFFICIENCY   0.85    // usable fraction of baud/10 bytes per second
 #define TCP_STREAM_PORT             8266    // High-speed binary TCP streaming port
 
 // =====================================================================
 // Network & Moonraker Defaults
 // =====================================================================
 #define DEVICE_NAME             "ESP8266-BedHub"
-#define FIRMWARE_VERSION        "1.0.0"
+#define FIRMWARE_VERSION        "1.1.0"
 #define MDNS_HOSTNAME           "esp8266-bedhub"
 #define HTTP_SERVER_PORT        80
 

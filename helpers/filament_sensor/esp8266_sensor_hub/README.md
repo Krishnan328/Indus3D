@@ -1,142 +1,97 @@
-# Indus3D ESP8266 Multi-Sensor Hub
-### Bed Collision Monitor + Automated Input Shaping + Chamber Telemetry
+# Indus3D ESP8266 bed sensor hub
+### Bed crash detection, Y input shaping and chamber telemetry over USB
 
-A production-grade embedded firmware, Klipper macro suite, and host Python analysis engine running on an **ESP8266** (NodeMCU / Wemos D1 Mini) mounted directly near the 3D printer's Y-carriage / bed frame.
-
-The hub eliminates long-wire inductive noise by digitizing sensor data directly at the carriage, transmitting telemetry over **Wi-Fi** (with transparent **USB Serial fallback**).
-
----
-
-## System Architecture
+An ESP8266 (NodeMCU) on the printer's Y carriage reads an **ADXL345** (bed acceleration, 3.9 mg/LSB, SPI) and a
+**BME280** (chamber temperature, humidity, pressure, I2C) and talks to the printer's host over **USB serial**.
+A host daemon owns the serial port and connects the hub to Klipper, Moonraker and Indus3D.
 
 ```text
-  +-------------------------------------------------------------------------+
-  |                             3D PRINTER BED                              |
-  |  +------------------------+             +----------------------------+  |
-  |  | ADXL345 Accelerometer  |             |      BME280 Sensor         |  |
-  |  | (Hardware SPI - HSPI)  |             |  (I2C - SDA: D2, SCL: D1)  |  |
-  |  +-----------+------------+             +--------------+-------------+  |
-  |              | 5 MHz SPI                               | 100 kHz I2C    |
-  |              v                                         v                |
-  |  +-------------------------------------------------------------------+  |
-  |  |                   ESP8266 MULTI-SENSOR HUB                        |  |
-  |  |  * Mode A: 200 Hz Bed Crash & Instantaneous Jerk Monitoring       |  |
-  |  |  * Mode A: 0.5 Hz Chamber Temp, Humidity & Pressure Sampling      |  |
-  |  |  * Mode B: 1600 Hz / 3200 Hz High-Speed Resonance Streaming       |  |
-  |  |  * REST API Web Server (Port 80) + TCP Binary Stream (Port 8266)  |  |
-  |  +-------------------+-----------------------------+-----------------+  |
-  +----------------------|-----------------------------|--------------------+
-                         | Wi-Fi (HTTP / TCP)          | USB Serial (115200)
-                         v                             v
-  +-------------------------------------------------------------------------+
-  |                        HOST (Raspberry Pi / Laptop)                     |
-  |  +--------------------+   +-------------------+   +------------------+  |
-  |  | Moonraker HTTP API |   | Klipper Firmware  |   | Python Analyzer  |  |
-  |  | (/printer/print/   |-->| (BED_CRASH_       |   | (PSD, Shaper     |  |
-  |  |  pause)            |   |  HANDLER macro)   |   |  Math, Plots)    |  |
-  |  +--------------------+   +-------------------+   +------------------+  |
-  +-------------------------------------------------------------------------+
+  ADXL345 (HSPI, CS = GPIO16)   BME280 (I2C, SDA = GPIO0, SCL = GPIO2, 0x76)
+              \                  /
+               ESP8266 firmware v1.1.0  -- 200 Hz jerk monitor, 1 Hz JSON, 1600 Hz capture on request
+                       | USB serial (115200; faster only during a capture)
+                       v
+   esp_bed_monitor_daemon.py   systemd: esp8266_bed_hub.service    /dev/esp8266_bed_hub (udev)
+     |  HTTP 127.0.0.1:7127          reconnects by itself, never resets the ESP, CSV log
+     |-- crash while printing --> Moonraker /printer/print/pause --> BED_CRASH_HANDLER JERK=<mg>
+     |-- MQTT (optional) ---------> Moonraker [sensor] ------------> Fluidd / Mainsail sensor card
+     |-- esp_hub_ctl.py <-- Klipper gcode_shell_command <-- macros (reset latch, status, threshold, shaper)
+     `-- Indus3D plugin esp_bed_hub --> SQLite telemetry_samples, dashboard card, /metrics, command hold
 ```
 
----
+## What it does
 
-## Key Features
+1. **Crash detection.** The ESP samples the ADXL345 at 200 Hz; a 3-axis jerk above the threshold (default 2000 mg,
+   500-8000, changeable at run time) latches and sends an alert line immediately. The daemon pauses the print through
+   Moonraker and runs `BED_CRASH_HANDLER` (retract, Z-hop bounded by the axis maximum, park, hotend off, bed stays on,
+   beeps). `BED_CRASH_RESUME` reheats to the saved targets, re-primes, clears the latch and resumes. A crash while no
+   print is running is logged and the latch is cleared; the handler never moves an idle printer.
+2. **Chamber telemetry.** One JSON line per second; a missing BME280 is reported as `null`, never as 0.
+3. **Y input shaping.** `BED_SHAPER_CALIBRATE_Y` sweeps the bed 5-120 Hz while the hub streams 15-byte checksummed
+   frames at up to 1600 Hz; the analyzer estimates the resonance and damping, evaluates ZV/MZV/ZVD/EI/2HUMP_EI/3HUMP_EI,
+   derives the maximum acceleration from the smoothing limit, writes a plot and a config snippet, and can update
+   `[input_shaper]` in `printer.cfg` (backup first).
+4. **Indus3D.** Samples go into the SQLite table `telemetry_samples`; chamber values feed `/api/v1/environment`; a crash
+   raises a notification and holds corrective commands until the latch is cleared; a dashboard card shows it all.
 
-1. **Deterministic 200 Hz Bed Crash & Jerk Detection (Mode A)**:
-   - Polls ADXL345 at 200 Hz over 5 MHz Hardware SPI.
-   - Computes instantaneous jerk delta:
-     $$\Delta a = \sqrt{(x_t - x_{t-1})^2 + (y_t - y_{t-1})^2 + (z_t - z_{t-1})^2}$$
-   - Latches `BED_CRASH_DETECTED` if $|\Delta a| > 2000\text{ mg}$ (configurable).
-   - Automatically issues emergency pause to Moonraker (`POST /printer/print/pause`) and USB Serial (`// action:paused` and `PAUSE`).
+## Install
 
-2. **Chamber Environmental Telemetry (0.5 Hz / Every 2 Seconds)**:
-   - Samples Bosch BME280 for Temperature (°C), Relative Humidity (%), and Barometric Pressure (hPa).
-   - Exposes REST endpoint (`GET /telemetry`) and dedicated Klipper endpoint (`GET /chamber`).
+Flash the firmware (`cd firmware && pio run --target upload`), then run `./install_hub.py` on the host and follow
+**docs/DEPLOYMENT_GUIDE.md** (udev rule, systemd unit, Klipper and Moonraker includes, the end-to-end crash test).
 
-3. **Automated Input Shaping & Resonance Calibration (Mode B)**:
-   - Shifts ADXL345 to 1600 Hz (or 3200 Hz) for high-frequency vibration recording.
-   - Streams 15-byte binary frames with monotonic sequence numbering and XOR checksums over TCP port 8266.
-   - `esp_shaper_analyzer.py` calculates Welch Power Spectral Density (PSD), models all 6 Klipper shapers (**ZV, MZV, ZVD, EI, 2HUMP_EI, 3HUMP_EI**), computes vibration reduction percentages, recommends optimal shaper frequency and max acceleration, and renders publication-grade Matplotlib plots.
-
-4. **Transparent USB Serial Fallback**:
-   - If Wi-Fi is disconnected or unavailable, the hub continues 200 Hz crash monitoring and outputs crash alerts and telemetry directly over USB Serial at 115200 baud.
-   - Full serial CLI (`HELP`, `TELEMETRY`, `CHAMBER`, `STATUS`, `RESET_CRASH`, `SET_THRESHOLD <mg>`, `START_SHAPER`).
-
----
-
-## Directory Structure
+## Layout
 
 ```text
 esp8266_sensor_hub/
-├── README.md                      # Project documentation and quickstart
+├── install_hub.py                   installer / uninstaller (udev, systemd, Klipper + Moonraker includes)
+├── esp8266_bed_hub.service.in       systemd unit template
 ├── docs/
-│   ├── WIRING_AND_PINOUT.md       # Pinout tables, schematics, boot-strap constraints
-│   └── DEPLOYMENT_GUIDE.md        # Compilation, flashing, and Klipper setup guide
-├── firmware/
-│   ├── platformio.ini             # PlatformIO build configuration for d1_mini / nodemcu
-│   ├── include/
-│   │   ├── config.h               # Pin assignments, defaults, EEPROM layout
-│   │   ├── adxl345_spi.h          # ADXL345 HSPI hardware driver
-│   │   ├── bme280_i2c.h           # Bosch BME280 I2C sensor driver
-│   │   ├── crash_detector.h       # 3-axis jerk computation and collision latch
-│   │   ├── shaper_streamer.h      # High-speed binary TCP streaming engine (1600 Hz)
-│   │   ├── moonraker_client.h     # Moonraker HTTP pause and G-code client
-│   │   ├── network_manager.h      # Wi-Fi Station, SoftAP fallback, mDNS
-│   │   └── web_server.h           # REST API endpoints (/telemetry, /chamber, etc.)
-│   └── src/
-│       ├── main.cpp               # 200 Hz loop, Mode state machine, Serial CLI
-│       ├── adxl345_spi.cpp
-│       ├── bme280_i2c.cpp
-│       ├── crash_detector.cpp
-│       ├── shaper_streamer.cpp
-│       ├── moonraker_client.cpp
-│       ├── network_manager.cpp
-│       └── web_server.cpp
+│   ├── DEPLOYMENT_GUIDE.md          setup, daily use, crash and shaper procedures, troubleshooting
+│   └── WIRING_AND_PINOUT.md         pins, boot-strap notes, cable guidance
+├── firmware/                        PlatformIO project (v1.1.0)
+│   ├── include/serial_protocol.h    command parser, baud/rate selection (host-testable, no Arduino deps)
+│   ├── src/main.cpp                 200 Hz loop, serial commands, 1 Hz telemetry, crash alert
+│   ├── src/crash_detector.cpp       jerk latch with peak tracking
+│   ├── src/shaper_streamer.cpp      binary capture sessions (baud switch for the session)
+│   └── test/run.sh                  host-side logic tests with Arduino stubs
 ├── klipper/
-│   ├── bed_sensor_hub.cfg         # Klipper macros: BED_CRASH_HANDLER, BED_SHAPER_CALIBRATE
-│   └── moonraker_bed_hub.conf     # Moonraker trusted clients & sensor configuration
+│   ├── bed_sensor_hub.cfg           macros: _BED_HUB_VARS, BED_CRASH_HANDLER, BED_CRASH_RESUME, BED_HUB_STATUS,
+│   │                                BED_HUB_RESET_CRASH, SET_BED_CRASH_THRESHOLD, BED_SHAPER_CALIBRATE_Y
+│   ├── bed_sensor_hub_shell.cfg.in  gcode_shell_command entries (rendered by the installer)
+│   └── moonraker_bed_hub.conf       [mqtt] + [sensor bed_hub]
 ├── scripts/
-│   ├── esp_shaper_analyzer.py     # Input Shaper PSD analysis, filter modeling & plotting
-│   ├── esp_bed_monitor_daemon.py  # Real-time console monitor & CSV telemetry logger
-│   ├── test_shaper_math.py        # Automated unit test suite (checksum, jerk, PSD, filters)
-│   └── mock_esp8266_server.py     # Mock HTTP & TCP server for offline verification
-└── output/
-    ├── resonances_bed_y.csv       # Klipper-format resonance test CSV
-    ├── bed_input_shaper_y.cfg     # Generated Klipper [input_shaper] configuration
-    └── shaper_calibration_bed_y.png # 4-panel publication-grade resonance plot
+│   ├── esp_bed_monitor_daemon.py    the host daemon (HTTP API, crash handling, captures, CSV, MQTT feed)
+│   ├── esp_hub_ctl.py               command line used by the macros: status, reset-crash, set-threshold, shaper-capture
+│   ├── esp_shaper_analyzer.py       PSD, damping, shaper fits, smoothing, plot, printer.cfg updater
+│   ├── hub_protocol.py              wire format shared by daemon, CLI and analyzer
+│   ├── mqtt_publish.py              minimal MQTT publisher (stdlib)
+│   ├── test_shaper_math.py          analyzer tests
+│   └── mock_esp8266_server.py       mock for the optional Wi-Fi mode (HTTP + TCP)
+└── tests/                           daemon (software model of the hub), macros (Jinja against a mock printer),
+                                     MQTT, installer
 ```
 
----
+## Daemon HTTP API (127.0.0.1:7127; POSTs need the header `X-Indus3D-Action: 1`)
 
-## Quickstart
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/telemetry` (`/status`) | GET | latest hub state, `connected`, `age_s`, daemon info incl. `last_crash` |
+| `/chamber` | GET | chamber values only |
+| `/health` | GET | `{"ok", "connected", "age_s"}` |
+| `/shaper/last` | GET | metadata of the last capture |
+| `/reset_crash` | POST | clear the hub's crash latch |
+| `/threshold` | POST | `{"mg": 2500}` (500-8000), re-applied after reconnects and ESP resets |
+| `/shaper/capture` | POST | `{"duration": 7, "rate": 1600, "baud": 921600}` -> samples, loss %, CSV path |
 
-### 1. Build and Flash Firmware
+The old Wi-Fi mode (`ENABLE_WIFI`, REST on the ESP, TCP stream on 8266) is still in the firmware sources but is
+disabled and not used by anything here.
+
+## Tests
+
 ```bash
-cd firmware
-pio run --target upload
+python3 -m venv .venv && .venv/bin/pip install pytest pyserial numpy scipy matplotlib jinja2
+.venv/bin/python -m pytest tests scripts/test_shaper_math.py     # daemon, macros, installer, analyzer
+firmware/test/run.sh                                              # firmware logic (host C++ compiler)
 ```
 
-### 2. Run Resonance Calibration (Input Shaping)
-```bash
-# Capture 7 seconds @ 1600 Hz from ESP8266 and compute optimal shaper
-python3 scripts/esp_shaper_analyzer.py --ip 192.168.1.150 --duration 7 --outdir output
-```
-
-### 3. Run Real-Time Telemetry Monitor
-```bash
-python3 scripts/esp_bed_monitor_daemon.py --ip 192.168.1.150 --log chamber_telemetry.csv
-```
-
----
-
-## REST API Reference
-
-| Endpoint | Method | Description | Example Response |
-|---|---|---|---|
-| `/telemetry` | `GET` | Instantaneous bed acceleration, jerk, and chamber telemetry | `{"bed_accel":{"x_mg":145,"y_mg":-12,"z_mg":-980,"jerk_mg":18},"chamber":{"temp_c":26.4,"humidity_pct":43.1,"pressure_hpa":1012.8},"crash_detected":false,"uptime_sec":1420}` |
-| `/chamber` | `GET` | Dedicated temperature/humidity endpoint for Klipper | `{"temperature":26.4,"humidity":43.1,"pressure":1012.8}` |
-| `/status` | `GET` | Diagnostics, RSSI, ADXL/BME online status, free heap | `{"device":"ESP8266-BedHub","version":"1.0.0","adxl345_online":true,...}` |
-| `/reset_crash`| `POST`| Clears latched collision state | `{"status":"ok","message":"Crash latch cleared"}` |
-| `/config` | `POST`| Dynamically update jerk threshold or Moonraker IP | `{"threshold_mg": 2200}` |
-| `/shaper/start`| `POST`| Initiates high-speed 1600 Hz sampling session | `{"status":"started","duration_s":5,"tcp_stream_port":8266}` |
-| `/shaper/status`| `GET`| High-speed stream progress and sample count | `{"running":false,"samples_recorded":8000,"rate_hz":1600}` |
+None of this replaces the on-printer procedure in the deployment guide (section 6).
