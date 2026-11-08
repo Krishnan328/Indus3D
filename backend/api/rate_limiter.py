@@ -20,8 +20,17 @@ from flask import jsonify, request
 _LIMITS = {
     "login": (5, 5 * 60),
     "hardware_cmd": (10, 60),
+    # Interactive adjustments (jog, extrude, babystep, sliders, macros, the console). A person can
+    # legitimately click twice a second; the safety limits live in the endpoints. Over the limit the
+    # request gets a 429, but it never counts toward the 24 h ban that protects the other categories.
+    "ui_adjust": (120, 60),
     "default": (120, 60),
 }
+_NO_BAN = {"ui_adjust"}
+_UI_ADJUST_PREFIXES = (
+    "/api/v1/control/jog", "/api/v1/control/execute",
+    "/api/v1/printer/macro/", "/api/v1/printer/gcode", "/api/v1/printer/adjust/",
+)
 _BAN_AFTER_VIOLATIONS = 3
 _VIOLATION_WINDOW_SECONDS = 60 * 60
 _BAN_SECONDS = 24 * 60 * 60
@@ -44,11 +53,16 @@ def _category() -> str:
     path = request.path
     if request.method == "POST" and path == "/api/v1/auth/login":
         return "login"
+    if request.method == "POST" and path.startswith(_UI_ADJUST_PREFIXES):
+        return "ui_adjust"
     if request.method == "POST" and (
         path.startswith("/api/v1/printer/")
         or path.startswith("/api/v1/control/")
         or path.startswith("/api/v1/twin/action/")
     ):
+        return "hardware_cmd"
+    # System page: services, updates, backups. DELETE counts too (it removes a backup).
+    if request.method in ("POST", "DELETE") and path.startswith("/api/v1/system/"):
         return "hardware_cmd"
     return "default"
 
@@ -98,11 +112,12 @@ def check_rate_limit(app):
                 recent.append(now)
                 return None
 
-            violations = _prune(_violations[ip], now, _VIOLATION_WINDOW_SECONDS)
-            violations.append(now)
-            _violations[ip] = violations
-            if len(violations) >= _BAN_AFTER_VIOLATIONS:
-                _bans[ip] = now + _BAN_SECONDS
+            if category not in _NO_BAN:
+                violations = _prune(_violations[ip], now, _VIOLATION_WINDOW_SECONDS)
+                violations.append(now)
+                _violations[ip] = violations
+                if len(violations) >= _BAN_AFTER_VIOLATIONS:
+                    _bans[ip] = now + _BAN_SECONDS
 
             retry_after = max(1, int(window - (now - recent[0])))
             return jsonify({

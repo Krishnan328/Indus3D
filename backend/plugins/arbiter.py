@@ -38,6 +38,10 @@ FAMILIES = {
     "SET_VELOCITY_LIMIT": "velocity",
     "SET_RETRACTION": "retraction",
     "SET_INPUT_SHAPER": "shaper",
+    "SET_GCODE_OFFSET": "z_offset",
+    "M140": "bed_temp",
+    "M107": "fan",
+    "SET_FAN_SPEED": "fan",
 }
 # Families whose live value Klipper reports, so external writes are detectable.
 OBSERVED = {"flow": "flow_factor", "speed": "speed_factor"}
@@ -112,6 +116,16 @@ class Arbiter:
                 "ts": now, "family": fam, "from": prev, "to": obs,
                 "detail": f"external write: {key} {prev} -> {obs}; yielding {self.yield_s:.0f}s"})
 
+    def manual_override(self, family, seconds=None, detail=""):
+        """A person changed ``family`` by hand (UI slider, babystep, ...): yield it so the controller does
+        not overwrite the change a few seconds later. Returns the yield end time."""
+        now = time.time()
+        until = now + (self.yield_s if seconds is None else float(seconds))
+        self.yield_until[family] = max(self.yield_until.get(family, 0), until)
+        self.events.appendleft({"ts": now, "family": family, "from": None, "to": None, "manual": True,
+                                "detail": detail or f"manual change of '{family}'; yielding {until - now:.0f}s"})
+        return self.yield_until[family]
+
     def status(self):
         now = time.time()
         return {
@@ -122,6 +136,14 @@ class Arbiter:
 
 
 arbiter = Arbiter()
+
+
+def note_manual_change(family, seconds=None, detail=""):
+    """Used by the typed UI control endpoints; never raises (a missing arbiter must not break a control)."""
+    try:
+        return arbiter.manual_override(family, seconds, detail)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def register_hooks(hooks) -> None:

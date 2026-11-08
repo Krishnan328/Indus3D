@@ -39,6 +39,7 @@ from config.settings import settings
 from digital_twin.vibration_monitor import vibration_monitor
 from workers.dsp_bridge import dsp_bridge
 from digital_twin.bed_safety import bed_safety
+from core.job_tracker import JobEdges
 
 POLL_HZ = settings.TWIN_TICK_HZ
 
@@ -82,6 +83,10 @@ class TelemetryWorker:
         # Print-state edge tracking, for print-complete/failed notifications
         # firing exactly once per transition rather than every tick.
         self._prev_print_state = None
+        # Start/end of each job, including queued jobs that follow each other inside one poll interval
+        self._edges = JobEdges()
+        self._job_filename = ""
+        self._last_fil_m = 0.0
         self._print_start_time = 0
         self._print_start_fil_m = 0
         self._print_start_wh = 0
@@ -216,6 +221,62 @@ class TelemetryWorker:
         except Exception as e:
             logging.info(f"⚠️  Error saving maintenance data: {e}")
 
+    def _finish_job(self, snap, ext_, job_ended, job_switched):
+        """Notification, timelapse and print_history for the job that just ended."""
+        ended_name = self._job_filename or snap.get("filename", "unknown file")
+        # after a hand-over the live filament counter already belongs to the new job
+        fil_now = self._last_fil_m if job_switched else ext_.get("filament_consumed_m", 0.0)
+        if job_ended == "complete":
+            notify(f"✅ Indus3D: print completed ({ended_name})")
+        elif job_ended in ("error", "cancelled"):
+            notify(f"🛑 Indus3D: print {job_ended} ({ended_name})")
+        timelapse_job.finish(job_ended)
+
+        # Log to print_history
+        try:
+            duration_s = time.time() - self._print_start_time
+            fil_used_g = max(0.0, fil_now - self._print_start_fil_m) * 3.0 # Approx 3g per meter of 1.75 PLA
+            power_used_wh = pzem_monitor.read().get("energy_wh", 0.0) - self._print_start_wh
+
+            # Active Spoolman calculation (optional, fallback to 0 cost if not available)
+            price_per_g = get_spool_price_per_g()
+            cost = fil_used_g * price_per_g
+            # Add a bit for electricity (e.g. $0.15 / kWh)
+            cost += (power_used_wh / 1000.0) * 0.15
+
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute("SELECT MAX(id) FROM config_history")
+            conf_row = c.fetchone()
+            config_id = conf_row[0] if conf_row and conf_row[0] else None
+
+            c.execute('''
+                INSERT INTO print_history
+                (filename, status, print_time_seconds, filament_used_g, power_used_wh, cost_usd, config_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (ended_name or "unknown", job_ended, duration_s, fil_used_g, power_used_wh, cost, config_id))
+            history_id = c.lastrowid
+
+            # Update total lifetime stats in odometry
+            c.execute("UPDATE odometry SET travel_meters = travel_meters + ? WHERE axis = 'E'",
+                      (max(0.0, fil_now - self._print_start_fil_m),))
+
+            # Update virtual spool usage
+            c.execute("SELECT value FROM printer_config WHERE key = 'virtual_spool_used_g'")
+            row = c.fetchone()
+            used_g = float(row[0]) if row else 0.0
+            used_g += fil_used_g
+            c.execute("INSERT OR REPLACE INTO printer_config (key, value) VALUES ('virtual_spool_used_g', ?)", (str(used_g),))
+
+            conn.commit()
+            conn.close()
+
+            if job_ended == "complete":
+                from services.qa_reporter import trigger_qa_report
+                trigger_qa_report(history_id, self._print_start_time, time.time(), ended_name or "unknown")
+        except Exception as e:
+            logging.info(f"⚠️  Error saving print history: {e}")
+
     def _tick(self):
 
         url = f"{settings.moonraker_url}/printer/objects/query?{KLIPPER_OBJECTS}"
@@ -309,6 +370,9 @@ class TelemetryWorker:
         printer_state.update(update)
 
         snap = printer_state.snapshot()
+        # not part of the state snapshot, but job-boundary detection (core/job_tracker) needs it:
+        # Klipper's print_duration restarts at 0 for every job, including the same file queued twice
+        snap["print_duration"] = update.get("print_duration", 0)
         in_screw_zone, zone_idx = bed_safety.is_in_exclusion_zone(
             snap.get("live_x", 0.0), snap.get("live_y", 0.0), snap.get("live_z", 0.0)
         )
@@ -318,6 +382,19 @@ class TelemetryWorker:
         kin  = kinematic_model.update(snap)
         thm  = thermal_model.update(snap)
         ext_ = extrusion_model.update(snap)
+
+        # Moonraker's job queue can load the next job within milliseconds of the previous one completing,
+        # faster than this poll: the "complete" state is then never seen and every plugin would treat the two
+        # jobs as one print. Synthesize the missing end of the old job first (plugins see a non-printing tick,
+        # the controller drops its commanded values), then the normal tick below is the start of the new one.
+        job_ended, job_started, job_switched = self._edges.step(snap)
+        if job_switched:
+            logging.info(f"🔁 TelemetryWorker: new job {snap.get('filename')!r} followed {self._job_filename!r} directly")
+            gap = dict(snap, print_state="complete")
+            command_pipeline.tick(gap, "live")
+            quality_controller.update(gap, kin, thm, ext_)
+            # book the old job (history, virtual spool usage) before the new job's plugins look at the spool
+            self._finish_job(snap, ext_, job_ended, job_switched)
 
         command_pipeline.tick(snap, "live")
 
@@ -347,64 +424,18 @@ class TelemetryWorker:
         # Print completion/failure notification, and timelapse start/finish —
         # both fire once on the actual transition, not every tick.
         cur_state = snap["print_state"]
-        if self._prev_print_state != "printing" and cur_state == "printing":
+        # End of a job first, then the start of the next one: with a queue both can happen on one tick.
+        if job_ended and not job_switched:
+            self._finish_job(snap, ext_, job_ended, job_switched)
+
+        if job_started:
             if get_timelapse_cfg().get("enabled"):
                 timelapse_job.start(snap.get("filename", ""))
+            self._job_filename = snap.get("filename", "")
             self._print_start_time = time.time()
             self._print_start_fil_m = ext_.get("filament_consumed_m", 0.0)
             self._print_start_wh = pzem_monitor.read().get("energy_wh", 0.0)
-
-        if self._prev_print_state == "printing" and cur_state != "printing":
-            if cur_state == "complete":
-                notify(f"✅ Indus3D: print completed ({snap.get('filename', 'unknown file')})")
-            elif cur_state in ("error", "cancelled"):
-                notify(f"🛑 Indus3D: print {cur_state} ({snap.get('filename', 'unknown file')})")
-            timelapse_job.finish(cur_state)
-
-            # Log to print_history
-            try:
-                duration_s = time.time() - self._print_start_time
-                fil_used_g = (ext_.get("filament_consumed_m", 0.0) - self._print_start_fil_m) * 3.0 # Approx 3g per meter of 1.75 PLA
-                power_used_wh = pzem_monitor.read().get("energy_wh", 0.0) - self._print_start_wh
-
-                # Active Spoolman calculation (optional, fallback to 0 cost if not available)
-                price_per_g = get_spool_price_per_g()
-                cost = fil_used_g * price_per_g
-                # Add a bit for electricity (e.g. $0.15 / kWh)
-                cost += (power_used_wh / 1000.0) * 0.15
-
-                conn = get_connection()
-                c = conn.cursor()
-                c.execute("SELECT MAX(id) FROM config_history")
-                conf_row = c.fetchone()
-                config_id = conf_row[0] if conf_row and conf_row[0] else None
-
-                c.execute('''
-                    INSERT INTO print_history
-                    (filename, status, print_time_seconds, filament_used_g, power_used_wh, cost_usd, config_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (snap.get("filename", "unknown"), cur_state, duration_s, fil_used_g, power_used_wh, cost, config_id))
-                history_id = c.lastrowid
-
-                # Update total lifetime stats in odometry
-                c.execute("UPDATE odometry SET travel_meters = travel_meters + ? WHERE axis = 'E'",
-                          (ext_.get("filament_consumed_m", 0.0) - self._print_start_fil_m,))
-
-                # Update virtual spool usage
-                c.execute("SELECT value FROM printer_config WHERE key = 'virtual_spool_used_g'")
-                row = c.fetchone()
-                used_g = float(row[0]) if row else 0.0
-                used_g += fil_used_g
-                c.execute("INSERT OR REPLACE INTO printer_config (key, value) VALUES ('virtual_spool_used_g', ?)", (str(used_g),))
-
-                conn.commit()
-                conn.close()
-
-                if cur_state == "complete":
-                    from services.qa_reporter import trigger_qa_report
-                    trigger_qa_report(history_id, self._print_start_time, time.time(), snap.get("filename", "unknown"))
-            except Exception as e:
-                logging.info(f"⚠️  Error saving print history: {e}")
+        self._last_fil_m = ext_.get("filament_consumed_m", 0.0)
 
         self._prev_print_state = cur_state
 

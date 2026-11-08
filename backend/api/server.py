@@ -28,6 +28,10 @@ from api.routes.spools import spools_bp
 from api.routes.sim import sim_bp
 from api.routes.printer import printer_bp
 from api.routes.bed import bed_bp
+from api.routes.files import files_bp
+from api.routes.queue import queue_bp
+from api.routes.adjust import adjust_bp
+from api.routes.thermal import thermal_bp
 from api.auth import auth_bp, install_auth_gate, get_or_create_secret_key, auth_required
 
 app  = Flask(__name__)
@@ -73,6 +77,11 @@ app.register_blueprint(sim_bp,      url_prefix="/api/v1/sim")
 app.register_blueprint(spools_bp,   url_prefix="/api/v1/spools")
 app.register_blueprint(printer_bp,  url_prefix="/api/v1/printer")
 app.register_blueprint(bed_bp,      url_prefix="/api/v1/bed")
+app.register_blueprint(files_bp,    url_prefix="/api/v1/files")
+app.register_blueprint(queue_bp,    url_prefix="/api/v1/queue")
+from api.routes.system import system_bp; app.register_blueprint(system_bp, url_prefix="/api/v1/system")  # noqa: E402
+app.register_blueprint(adjust_bp,   url_prefix="/api/v1/printer/adjust")
+app.register_blueprint(thermal_bp,  url_prefix="/api/v1/printer")
 app.register_blueprint(auth_bp)
 
 # Session secret + auth gate
@@ -240,7 +249,10 @@ def jog_toolhead():
                 return jsonify({"error": "Jog blocked by bed safety (exclusion zone or out-of-bounds)"}), 409
             return jsonify({"status": "queued", "simulated": True})
         terms = " ".join(f"{axis.upper()}{value:.3f}" for axis, value in delta.items() if value)
-        result = _run_managed_gcode(f"G91\nG1 {terms} F{feedrate:.0f}\nG90")
+        # relative moves; extruder moves need relative extrusion (M83) even if the print preamble set M82,
+        # and the printer's own modal state is restored afterwards
+        result = _run_managed_gcode(
+            f"SAVE_GCODE_STATE NAME=INDUS_JOG\nG91\nM83\nG1 {terms} F{feedrate:.0f}\nRESTORE_GCODE_STATE NAME=INDUS_JOG")
         return jsonify(result), (200 if result["status"] != "error" else 502)
     except Exception as e:
         return jsonify({"error": str(e)}), 502
@@ -757,9 +769,18 @@ def environment():
     # Sim worker has realistic simulated environment
     if w and hasattr(w, "environment"):
         return jsonify(w.environment)
-    # Live mode — return zeros until BME280 is wired
+    # Live mode: the BME280 behind the ESP bed hub, fresh readings only.
     # NOTE: do NOT fall back to ext_temp (causes 200°C ambient reading)
-    return jsonify({"temperature": 0.0, "humidity": 0.0})
+    try:
+        from plugins.esp_bed_hub import hub
+        c = hub.chamber()
+    except Exception:  # noqa: BLE001
+        c = None
+    if c:
+        return jsonify({"temperature": c.get("temp_c"), "humidity": c.get("humidity_pct") or 0.0,
+                        "pressure": c.get("pressure_hpa"), "source": "esp_bed_hub", "available": True})
+    # No sensor (or the hub is unplugged): zeros, flagged so a client can tell 'no data' from '0 °C'
+    return jsonify({"temperature": 0.0, "humidity": 0.0, "available": False})
 
 
 @app.route("/api/v1/power", methods=["GET"])

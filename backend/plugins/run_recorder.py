@@ -18,6 +18,7 @@ import time
 from collections import deque
 from typing import Callable, List, Optional
 
+from core.job_tracker import is_new_job, job_ref
 from plugins._common import data_dir, read_json, write_json
 from plugins.arbiter import family_of, s_value
 
@@ -40,6 +41,7 @@ class RunRecorder:
         self._last_sample = float("-inf")
         self._archive = archive
         self._printing = False
+        self._ref: Optional[dict] = None
 
     def on_finish(self, fn: Callable[[dict], None]) -> None:
         self._listeners.append(fn)
@@ -79,11 +81,17 @@ class RunRecorder:
     def tick(self, snap, ctx):
         now = ctx.get("now", time.time())
         printing = snap.get("print_state") == "printing"
-        if printing and not self._printing:
+        if printing and self._printing and is_new_job(self._ref, snap):
+            # queued job right behind the previous one (no non-printing tick in between): close the old
+            # run and open a new one so commands/vetoes/corrections are not mixed across prints
+            self._finish("complete", now)
+            self._start(snap, now)
+        elif printing and not self._printing:
             self._start(snap, now)
         elif self._printing and not printing:
             self._finish(snap.get("print_state", "unknown"), now)
         self._printing = printing
+        self._ref = job_ref(snap) if printing else None
         run = self.current
         if not run:
             return

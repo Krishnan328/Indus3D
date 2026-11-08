@@ -18,6 +18,7 @@ import math
 import time
 from collections import deque
 
+from core.job_tracker import is_new_job, job_ref
 from plugins._common import http_json, notify_safe
 
 PLUGIN_INFO = {
@@ -60,6 +61,7 @@ class SpoolPlanner:
         self.notify = notify
         self.history = deque(maxlen=20)
         self._was_printing = False
+        self._ref = None
 
     @staticmethod
     def _moonraker_meta(filename):
@@ -102,12 +104,15 @@ class SpoolPlanner:
 
     def tick(self, snap, ctx):
         printing = snap.get("print_state") == "printing"
-        if printing and not self._was_printing and snap.get("filename"):
+        # a queued job right behind the previous one counts as a new print start: re-check the spool for it
+        new_job = printing and self._was_printing and is_new_job(self._ref, snap)
+        if printing and (not self._was_printing or new_job) and snap.get("filename"):
             r = self.check(snap["filename"])
             if r["verdict"] == "insufficient":
                 self.notify(f"🧵 Indus3D: spool may run out — {r['filename']} needs ~{r['needed_with_margin_g']} g, "
                             f"{r['remaining_g']} g left ({r['source']}). Short by {r['short_by_g']} g.")
         self._was_printing = printing
+        self._ref = job_ref(snap) if printing else None
 
 
 planner = SpoolPlanner()

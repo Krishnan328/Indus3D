@@ -30,6 +30,8 @@ Endpoints:
   POST /api/printer/power/<device>/<action>  → manual on/off
   GET  /api/printer/power/cutoff_config      → read-only: is auto-cutoff armed
   GET  /api/config                           → client-safe config (webcam url, etc.)
+  POST /api/printer/macro/<name>             → run a Klipper macro (name checked against Klipper's own list)
+  GET  /api/printer/status                   → heaters, sensors, fans, outputs, leveling helpers + capabilities
 """
 
 import logging
@@ -640,6 +642,65 @@ def get_macros():
         return jsonify({"macros": sorted(macros)})
     except Exception as e:
         return jsonify({"error": str(e)}), 502
+
+# ── Typed control: macros and live Klipper status ────────────────────────────
+# Macros are NOT run through the G-code allowlist (user macros have arbitrary names). Instead the
+# name must be one of Klipper's own gcode_macro objects and every parameter is validated.
+
+_PRINT_SAFE_MACROS = {"PAUSE", "RESUME", "CLEAR_PAUSE"}   # no confirmation needed while printing
+
+
+@printer_bp.route("/macro/<name>", methods=["POST"])
+def run_macro(name):
+    from api import moonraker_util as mu
+    data = request.get_json(force=True, silent=True) or {}
+    params = data.get("params") or {}
+    if not isinstance(params, dict):
+        return jsonify({"error": "params must be an object"}), 400
+    import workers
+    w = workers._active_worker
+    sim = bool(w and hasattr(w, "inject_gcode"))
+    try:
+        canonical = None
+        if not sim:
+            canonical = mu.valid_name("gcode_macro", name)
+            if canonical is None:
+                return jsonify({"error": f"Klipper has no macro named {name!r}"}), 404
+        else:
+            canonical = name
+        script = mu.build_macro_script(canonical, params)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except mu.MoonrakerError as e:
+        return jsonify({"error": str(e), "moonraker": settings.moonraker_url}), 502
+
+    if _printer_is_busy() and canonical.upper() not in _PRINT_SAFE_MACROS and data.get("confirmed") is not True:
+        return jsonify({"error": "A print is active: running a macro now needs confirmation",
+                        "needs_confirmation": True}), 409
+    try:
+        if sim:
+            w.inject_gcode(script)
+            return jsonify({"status": "queued", "macro": canonical, "simulated": True})
+        res = mu.run_script(script)
+        if not res.ok:
+            return jsonify({"status": "error", "macro": canonical, "detail": res.text[:300]}), 422
+        if w and hasattr(w, "live_commands"):
+            import time as _t
+            w.live_commands.append({"text": script, "ts": _t.time()})
+        return jsonify({"status": "ok", "macro": canonical})
+    except mu.MoonrakerError as e:
+        return jsonify({"error": str(e), "moonraker": settings.moonraker_url}), 502
+
+
+@printer_bp.route("/status", methods=["GET"])
+def klipper_status():
+    """Heaters, temperature sensors, fans, output pins and leveling helpers, plus capabilities."""
+    from api import moonraker_util as mu, printer_status
+    try:
+        return jsonify(printer_status.snapshot())
+    except mu.MoonrakerError as e:
+        return jsonify({"ok": False, "error": str(e), "moonraker": settings.moonraker_url}), 502
+
 
 # ── Multi-printer (switch-based, see config/printers.py) ────────────────────
 # Not "N simultaneous connections" — one active Moonraker connection at a
