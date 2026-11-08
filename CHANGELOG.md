@@ -8,14 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.2.0] - Intelligent Automation: KAMP, Sensor-Aware Pre-Flight, Git Backups & Visual QA Audit
 
 ### Added
-- **KAMP (Klipper Adaptive Meshing & Purging) Suite (`kamp/`, `klipper/kamp/`)**:
-  - `KAMP_Settings.cfg`: Configurable probe and purge parameters with Eddy rapid-scan bounds protection.
+- **KAMP (Klipper Adaptive Meshing & Purging) Suite (`kamp/`)**:
+  - `KAMP_Settings.cfg`: Configurable probe and purge parameters ; mesh bounds are derived from your own `[bed_mesh]`/probe/axis config (the `mesh_min_*`/`mesh_max_*` variables are optional overrides, 0 = auto). Probe method defaults to `default`; set `variable_probe_method: "rapid_scan"` to opt in (used only when the config has `[bed_mesh]` and an eddy-current probe, otherwise it falls back).
   - `Adaptive_Mesh.cfg`: Intercepts `BED_MESH_CALIBRATE` to dynamically restrict mesh probing to the exact bounding box of sliced objects. Automatically scales probe count based on footprint dimensions.
   - `Adaptive_Purge.cfg` (`LINE_PURGE`): Dynamically purges a clean strip immediately adjacent to the printed part, saving filament and cycle time.
   - `Smart_Park.cfg` (`SMART_PARK`): Parks toolhead 5mm above the print area near the first extrusion point during final nozzle heatup, avoiding ooze and bed travel drool.
 - **Sensor-Aware Pre-Flight PRINT_START & PRINT_END (`print_start_end.cfg`)**:
-  - `PRINT_START`: Parametric slicer integration (`BED_TEMP`, `EXTRUDER_TEMP`, `CHAMBER_MIN`, `SOAK_MINS`) with dual-stage pre-heating (150°C standby during probing), automatic wipe-brush cleaning (`NOZZLE_WIPE`), KAMP rapid-scan adaptive mesh, and smart priming.
-  - `PRINT_END`: Automatic safe retraction, non-colliding Z-hop, rear toolhead parking, heater shutdown, fan cutoff, and mesh clearance.
+  - `PRINT_START`: Parametric slicer integration (`BED_TEMP`, `EXTRUDER_TEMP`, `CHAMBER_MIN`, `SOAK_MINS`) with dual-stage pre-heating (150°C standby during probing), automatic wipe-brush cleaning (`NOZZLE_WIPE`), KAMP adaptive mesh (`METHOD=rapid_scan` only when requested and supported), a read-only pre-flight report (filament sensors, missing heater/extruder; warns, never aborts) and smart priming. Works without a heated bed.
+  - `PRINT_END`: Automatic safe retraction, non-colliding Z-hop, rear toolhead parking, heater shutdown, fan cutoff, and mesh clearance. Heaters and fan are switched off first, the retract is skipped on a cold nozzle, no moves happen when axes are not homed or a bed crash is latched.
+  - `LINE_PURGE`: `variable_flow_rate` is a true volumetric limit (mm3/s); the feedrate is derived from the filament diameter and purge amount. Targets are clamped to the axis limits, the line avoids the model, and G-code state is saved/restored.
 - **Automated Git Configuration Backup (`services/config_backup.py`, `api/routes/printer.py`)**:
   - Real-time Git repository tracking for Klipper and Moonraker configuration directories.
   - Auto-backup on configuration save with file summaries and timestamps.
