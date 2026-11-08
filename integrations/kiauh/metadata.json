@@ -1,0 +1,11 @@
+{
+  "metadata": {
+    "index": 99,
+    "module": "extension",
+    "maintained_by": "Krishnan H (Indus3D Project)",
+    "display_name": "Indus3D Digital Twin",
+    "description": ["Digital twin, vibration DSP, and print quality monitoring."],
+    "repo": "https://github.com/Krishnan328/Indus3D",
+    "updates": true
+  }
+}

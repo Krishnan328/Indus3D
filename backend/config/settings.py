@@ -44,10 +44,18 @@ class _Settings:
     CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "*")
 
     # ── Database ──────────────────────────────────────────────────────────────
-    DB_PATH: str = os.getenv(
-        "DB_PATH",
-        str(Path(__file__).parent.parent / "db" / "flight_record.db")
-    )
+    @classmethod
+    def _default_db_path(cls) -> str:
+        env_db = os.getenv("DB_PATH")
+        if env_db:
+            return env_db
+        code_dir = Path(__file__).parent.parent
+        if os.access(str(code_dir), os.W_OK):
+            return str(code_dir / "db" / "flight_record.db")
+        data_home = os.getenv("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        return str(Path(data_home) / "indus3d" / "db" / "flight_record.db")
+
+    DB_PATH: str = _default_db_path.__func__(None)
 
     # ── Timelapse ─────────────────────────────────────────────────────────────
     # Behavior (enabled/mode/interval/fps) lives in indus_overrides.cfg like
@@ -64,13 +72,15 @@ class _Settings:
     SIM_LAYERS: int  = int(os.getenv("SIM_LAYERS", "30"))
 
     # ── Telemetry tick rate ───────────────────────────────────────────────────
-    # Was a hardcoded POLL_HZ=10 constant in telemetry_worker.py. Every tick
-    # does a Moonraker poll + 3 digital twin model updates + a WebSocket push
-    # + (now-batched) SQLite logging — on a 1GB Pi or Creality mainboard,
-    # lower this rather than inheriting whatever a Pi 5 comfortably handles.
-    # The roadmap's planned 50Hz WebSocket-subscription upgrade should target
-    # this setting too, not replace it with a new hardcoded value.
-    TWIN_TICK_HZ: float = float(os.getenv("TWIN_TICK_HZ", "10"))
+    # Telemetry worker tick frequency (Hz) while actively printing. Moonraker
+    # WebSocket push is event-driven; the background loop is responsible for
+    # running the digital-twin models, safety controller and recovery polling.
+    TWIN_TICK_HZ: float = float(os.getenv("TWIN_TICK_HZ", "25"))
+    # A printer at rest does not need a 25 Hz physics pass.  These lower rates
+    # keep temperatures and service state fresh without making an idle
+    # Indus3D host materially heavier than a normal Mainsail/Moonraker stack.
+    TWIN_IDLE_TICK_HZ: float = float(os.getenv("TWIN_IDLE_TICK_HZ", "4"))
+    TWIN_OFFLINE_TICK_HZ: float = float(os.getenv("TWIN_OFFLINE_TICK_HZ", "1"))
 
     # NOTE: input shaper baseline (Y resonance Hz, bed mass, shaper type) is
     # NOT read from here despite an earlier version of this file suggesting

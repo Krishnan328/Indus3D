@@ -43,6 +43,25 @@ pub struct CollisionEvent {
     pub reason: String,
 }
 
+/// Bed friction / first-layer contact metrics (Auto-Z): jerk spikes plus the ratio of
+/// high-frequency friction energy (1200-1600 Hz) to motion energy (20-400 Hz).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AutoZMetrics {
+    pub is_contact: bool,
+    pub hffi: f32,
+    pub peak_jerk: f32,
+    pub kurtosis: f32,
+    pub regime: String,
+    pub recommended_trim: f32,
+}
+
+impl AutoZMetrics {
+    fn idle() -> Self {
+        Self { is_contact: false, hffi: 0.0, peak_jerk: 0.0, kurtosis: 0.0,
+               regime: "idle".to_string(), recommended_trim: 0.0 }
+    }
+}
+
 /// Spectral analysis result produced once per 1-second sliding window.
 #[derive(Debug, serde::Serialize)]
 pub struct DspResult {
@@ -55,6 +74,7 @@ pub struct DspResult {
     pub torque_ripple:      f32,
     /// The frequency bin that was notched out (motor step excitation), or 0
     pub notched_hz:         f32,
+    pub auto_z:             AutoZMetrics,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -211,7 +231,16 @@ impl SlowPathProcessor {
                 peak_hz: 0.0, max_magnitude: 0.0, kurtosis: 0.0, rms: 0.0,
                 estimated_stiffness: 0.0, estimated_mass: 0.0,
                 torque_ripple: 0.0, notched_hz: 0.0,
+                auto_z: AutoZMetrics::idle(),
             };
+        }
+
+        // Time-domain jerk (derivative of acceleration), for contact detection
+        let dt = 1.0 / self.sample_rate;
+        let mut peak_jerk = 0.0f32;
+        for i in 1..n {
+            let j = (data[i] - data[i - 1]).abs() / dt;
+            if j > peak_jerk { peak_jerk = j; }
         }
 
         // 1. RMS and kurtosis on raw signal
@@ -261,9 +290,17 @@ impl SlowPathProcessor {
 
         let mut max_mag  = 0.0f32;
         let mut peak_bin = 1usize;
+        let mut low_band_energy = 1e-6f32;     // 20-400 Hz: motor step and travel harmonics
+        let mut friction_band_energy = 0.0f32; // 1200-1600 Hz: micro-asperity rubbing
 
         for i in 1..half {
             let freq = i as f32 * freq_resolution;
+            let band_mag = complex_data[i].norm_sqr();
+            if (20.0..=400.0).contains(&freq) {
+                low_band_energy += band_mag;
+            } else if (1200.0..=1600.0).contains(&freq) {
+                friction_band_energy += band_mag;
+            }
             // Skip notched motor-step frequency bins
             if step_freq_hz > 1.0 {
                 if (freq >= notch_lo && freq <= notch_hi)
@@ -301,6 +338,17 @@ impl SlowPathProcessor {
             rms * 0.05 * (kurtosis / 3.0).min(2.0)
         };
 
+        // Auto-Z: friction index, contact flag and regime
+        let hffi = friction_band_energy / low_band_energy;
+        let is_contact = peak_jerk > 400.0 || kurtosis > 6.0;
+        let (regime, recommended_trim) = if hffi > 0.38 {
+            ("rubbing".to_string(), 0.025)
+        } else if hffi < 0.05 && rms > 0.02 {
+            ("under_squish".to_string(), -0.015)
+        } else {
+            ("optimal".to_string(), 0.0)
+        };
+
         DspResult {
             peak_hz,
             max_magnitude: max_mag.sqrt() / self.window_size as f32,
@@ -310,6 +358,7 @@ impl SlowPathProcessor {
             estimated_mass: assumed_mass,
             torque_ripple,
             notched_hz: if step_freq_hz > 1.0 { step_freq_hz } else { 0.0 },
+            auto_z: AutoZMetrics { is_contact, hffi, peak_jerk, kurtosis, regime, recommended_trim },
         }
     }
 }

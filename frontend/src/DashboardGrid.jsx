@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { Activity, GripHorizontal, Lock, Unlock, PlaySquare } from "lucide-react";
+import { Activity, GripHorizontal, Lock, Unlock, PlaySquare, Trash2, Cpu, Server, HardDrive, Thermometer } from "lucide-react";
 import { useStore } from "./store";
 import { Viewport } from "./Viewport";
 import { PrintStatusCard } from "./PrintStatusCard";
@@ -152,18 +152,33 @@ export function LedControlCard({ isDarkMode }) {
 
 
 // ── G-Code Terminal ──────────────────────────────────────────────────────────
+const COMMON_GCODES = [
+  "G28",
+  "BED_MESH_CALIBRATE",
+  "FIRMWARE_RESTART",
+  "M112",
+  "M104",
+  "M140",
+  "M109",
+  "M190",
+  "M84",
+  "QUERY_ENDSTOPS",
+  "RESTART"
+];
+
 export function Terminal({ isDarkMode }) {
-  const [input, setInput]     = useState("");
-  const [isSending, setSend]  = useState(false);
-  const [history, setHistory] = useState([]);
+  const [input, setInput]           = useState("");
+  const [isSending, setSend]        = useState(false);
   const [historyIdx, setHistoryIdx] = useState(-1);
-  const [draft, setDraft]     = useState("");
-  const filePosition = useStore((s) => s.telemetry?.file_position);
-  const gcodeLines   = useStore((s) => s.gcodeLines);
+  const [draft, setDraft]           = useState("");
+  const [clearedCount, setClearedCount] = useState(0);
+
   const liveCommands = useStore((s) => s.liveCommands);
+  const clearLiveCommands = useStore((s) => s.clearLiveCommands);
   const simMode      = useStore((s) => s.simMode);
   const sendGcode    = useStore((s) => s.sendGcode);
   const isPrinting   = useStore((s) => s.telemetry?.state === "printing");
+  const macros       = useStore((s) => s.macros);
   const uiTheme      = useStore((s) => s.theme);
   const consoleDirection    = useStore((s) => s.uiPrefs.consoleDirection);
   const consoleCompact      = useStore((s) => s.uiPrefs.consoleCompact);
@@ -171,60 +186,27 @@ export function Terminal({ isDarkMode }) {
   const t = useThemeTokens();
   const brutalist = useIsBrutalist();
 
+  useEffect(() => {
+    if (liveCommands.length === 0) setClearedCount(0);
+  }, [liveCommands.length]);
+
+  const handleClear = () => {
+    setClearedCount(liveCommands.length);
+    if (clearLiveCommands) clearLiveCommands();
+  };
+
   const displayLines = useMemo(() => {
-    const parseLive = (lines) => lines.map(l => {
-      const text = l.text ?? l;
-      const source = text.startsWith("[QC]") || text.startsWith("[INDUS]") ? "indus" : "user";
+    const parseLive = (lines) => lines.map((l) => {
+      const text = typeof l === "object" && l !== null ? (l.text ?? "") : String(l ?? "");
+      const source = text.startsWith("!!") ? "error" :
+                     text.startsWith("[QC]") || text.startsWith("[INDUS]") ? "indus" :
+                     text.startsWith(">>> ") ? "user" : "device";
       return { text, source, highlight: true };
     });
 
-    if (simMode) {
-      const sliced = liveCommands.slice(-6);
-      return sliced.map((l, i) => {
-        const text = l.text ?? l;
-        let source = "file";
-        if (text.startsWith("[QC]") || text.startsWith("[INDUS]")) source = "indus";
-        if (text.startsWith(">>> ")) source = "user";
-
-        return {
-          text,
-          source,
-          highlight: false,
-          active: i === sliced.length - 1
-        };
-      });
-    }
-    if (!isPrinting) return [];
-
-    const recentLive = parseLive(liveCommands.slice(-3));
-
-    if (!gcodeLines?.length) {
-      if (recentLive.length) return recentLive;
-      return [{ text: "; Loading G-code file...", source: "file" }];
-    }
-
-    try {
-      let lo = 0, hi = gcodeLines.length - 1, mid = 0;
-      const pos = Number(filePosition) || 0;
-      while (lo <= hi) {
-        mid = Math.floor((lo + hi) / 2);
-        if (!gcodeLines[mid]) break;
-        if (gcodeLines[mid].byte < pos)       lo = mid + 1;
-        else if (gcodeLines[mid].byte > pos)  hi = mid - 1;
-        else break;
-      }
-      const start = Math.max(0, mid - 2);
-      const end   = Math.min(gcodeLines.length, mid + 3);
-      const fileLines = gcodeLines.slice(start, end).map((l, i) => ({
-        text: l?.text || ";",
-        active: (start + i) === mid,
-        source: "file"
-      }));
-      return [...recentLive, ...fileLines];
-    } catch {
-      return recentLive;
-    }
-  }, [filePosition, gcodeLines, liveCommands, simMode, isPrinting]);
+    const activeLines = clearedCount > 0 ? liveCommands.slice(clearedCount) : liveCommands;
+    return parseLive(activeLines);
+  }, [liveCommands, clearedCount]);
 
   // Console filter: hide M105-style temperature status lines (e.g. "ok T:210.0 /210.0 B:60.0 /60.0")
   const filteredLines = useMemo(() => {
@@ -233,13 +215,21 @@ export function Terminal({ isDarkMode }) {
     return displayLines.filter((l) => !tempLine.test(l.text || ""));
   }, [displayLines, hideTempsInConsole]);
 
+  const getCmdHistory = () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("indus3d_cmd_history") || "[]");
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  };
+
   const send = async (e) => {
     e.preventDefault();
     const cmd = input.trim();
     if (!cmd) return;
     setSend(true);
     await sendGcode(cmd);
-    setHistory(prev => [cmd, ...prev]);
     setHistoryIdx(-1);
     setDraft("");
     setInput("");
@@ -247,23 +237,46 @@ export function Terminal({ isDarkMode }) {
   };
 
   const handleKeyDown = (e) => {
+    const hist = getCmdHistory();
     if (e.key === "ArrowUp") {
+      if (!hist.length) return;
       e.preventDefault();
-      if (historyIdx < history.length - 1) {
-        if (historyIdx === -1) setDraft(input);
-        const nextIdx = historyIdx + 1;
+      if (historyIdx === -1) {
+        setDraft(input);
+        const nextIdx = hist.length - 1;
         setHistoryIdx(nextIdx);
-        setInput(history[nextIdx]);
+        setInput(hist[nextIdx]);
+      } else if (historyIdx > 0) {
+        const nextIdx = historyIdx - 1;
+        setHistoryIdx(nextIdx);
+        setInput(hist[nextIdx]);
       }
     } else if (e.key === "ArrowDown") {
+      if (historyIdx !== -1) {
+        e.preventDefault();
+        if (historyIdx < hist.length - 1) {
+          const nextIdx = historyIdx + 1;
+          setHistoryIdx(nextIdx);
+          setInput(hist[nextIdx]);
+        } else {
+          setHistoryIdx(-1);
+          setInput(draft);
+        }
+      }
+    } else if (e.key === "Tab") {
       e.preventDefault();
-      if (historyIdx > 0) {
-        const prevIdx = historyIdx - 1;
-        setHistoryIdx(prevIdx);
-        setInput(history[prevIdx]);
-      } else if (historyIdx === 0) {
-        setHistoryIdx(-1);
-        setInput(draft);
+      const current = input.trim();
+      if (!current) return;
+      const candidates = Array.from(new Set([...COMMON_GCODES, ...(macros || [])]));
+      const matches = candidates.filter((c) =>
+        c.toLowerCase().startsWith(current.toLowerCase())
+      );
+      if (matches.length > 0) {
+        const exactIdx = matches.findIndex(
+          (m) => m.toLowerCase() === current.toLowerCase()
+        );
+        const nextMatch = exactIdx >= 0 ? matches[(exactIdx + 1) % matches.length] : matches[0];
+        setInput(nextMatch);
       }
     }
   };
@@ -298,8 +311,18 @@ export function Terminal({ isDarkMode }) {
      btnCls = "bg-[#FFD166] text-[#111] font-bold rounded-none border-[3px] border-[#111] hover:bg-yellow-400";
   }
 
+  const consoleRef = React.useRef(null);
+  React.useEffect(() => {
+    if (consoleDirection === "bottom" && consoleRef.current) {
+      consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+    }
+  }, [filteredLines, consoleDirection]);
+
+  const termErrorClass = isDarkMode ? "text-red-400 font-bold" : "text-red-600 font-bold";
+
   const getLineClass = (l) => {
     if (l.active) return termActiveClass;
+    if (l.source === "error" || (l.text && l.text.startsWith("!!"))) return termErrorClass;
     if (l.source === "user") return termUserClass;
     if (l.source === "indus") return termIndusClass;
     return "";
@@ -307,10 +330,13 @@ export function Terminal({ isDarkMode }) {
 
   const lineClass = consoleCompact ? "whitespace-nowrap px-1 py-0" : "whitespace-nowrap px-1 py-0.5";
   const consoleBody = (
-    <div className={`flex-1 min-h-0 p-2 font-mono text-[10px] overflow-y-auto flex ${consoleDirection === "bottom" ? "flex-col" : "flex-col-reverse"} ${consoleCompact ? "gap-0" : ""} ${termBgClass}`}>
+    <div
+      ref={consoleRef}
+      className={`flex-1 min-h-0 p-2 font-mono text-[10px] overflow-y-auto flex ${consoleDirection === "bottom" ? "flex-col" : "flex-col-reverse"} ${consoleCompact ? "gap-0" : ""} ${termBgClass}`}
+    >
       {!filteredLines.length
         ? <div className="text-center italic opacity-40 self-center">
-            {isPrinting || simMode ? "; Awaiting G-code..." : "Awaiting Print Job..."}
+            {isPrinting || simMode ? "; Awaiting G-code..." : "; Console ready"}
           </div>
         : (consoleDirection === "bottom" ? filteredLines : [...filteredLines].reverse()).map((l, i) => (
             <div key={i} className={`${lineClass} ${getLineClass(l)}`}>
@@ -326,11 +352,11 @@ export function Terminal({ isDarkMode }) {
         type="text"
         value={input}
         onChange={(e) => {
-           setInput(e.target.value.toUpperCase());
-           if (historyIdx === -1) setDraft(e.target.value.toUpperCase());
+           setInput(e.target.value);
+           if (historyIdx === -1) setDraft(e.target.value);
         }}
         onKeyDown={handleKeyDown}
-        placeholder={simMode ? "e.g. G28 or TEST" : "e.g. G28"}
+        placeholder={simMode ? "e.g. G28 or TEST" : "e.g. G28, BED_MESH_CALIBRATE"}
         disabled={isSending}
         className={`flex-1 px-3 py-1.5 font-mono text-xs outline-none ${inputCls}`}
       />
@@ -349,7 +375,18 @@ export function Terminal({ isDarkMode }) {
       <div className="flex items-center gap-2 shrink-0">
         <Activity size={15} className={brutalist ? "" : "text-emerald-500"} />
         <h3 className={t.heading}>Console</h3>
-        {simMode && <span className={`ml-auto text-[9px] px-2 py-0.5 ${t.chip} ${brutalist ? "bg-[#B7E4C7]" : "bg-blue-700 text-white"}`}>SIM</span>}
+        {simMode && <span className={`text-[9px] px-2 py-0.5 ${t.chip} ${brutalist ? "bg-[#B7E4C7]" : "bg-blue-700 text-white"}`}>SIM</span>}
+        <button
+          type="button"
+          onClick={handleClear}
+          title="Clear console logs"
+          className={`ml-auto flex items-center gap-1 text-[10px] px-2 py-0.5 rounded opacity-70 hover:opacity-100 transition-opacity ${
+            brutalist ? "border border-[#111] bg-white text-[#111]" : "hover:bg-white/10 text-gray-400 hover:text-white"
+          }`}
+        >
+          <Trash2 size={12} />
+          <span>Clear</span>
+        </button>
       </div>
       {/* "bottom" = shell-style: input above, newest entry at the bottom.
           "top" (default) = input below, newest entry at the top. */}
@@ -363,6 +400,72 @@ export function Terminal({ isDarkMode }) {
           {consoleBody}
           {consoleForm}
         </>
+      )}
+    </div>
+  );
+}
+
+// ── System Loads / Host Stats ───────────────────────────────────────────────
+export function SystemStatsStrip({ isDarkMode }) {
+  const systemStats = useStore((s) => s.systemStats);
+  const fetchSystemStats = useStore((s) => s.fetchSystemStats);
+  const brutalist = useIsBrutalist();
+
+  useEffect(() => {
+    fetchSystemStats();
+    const interval = setInterval(() => {
+      fetchSystemStats();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [fetchSystemStats]);
+
+  const cpuPct = Math.round(Number(systemStats?.cpu_percent ?? systemStats?.cpu_usage ?? systemStats?.cpu ?? 0));
+  const ramPct = Math.round(Number(systemStats?.memory_percent ?? systemStats?.ram_percent ?? systemStats?.memory?.percent ?? systemStats?.ram_usage ?? 0));
+  const cpuTemp = systemStats?.cpu_temp ?? systemStats?.temp ?? systemStats?.temperature;
+  const osInfo = systemStats?.os_info ?? systemStats?.os ?? systemStats?.distribution ?? "NixOS";
+  const arch = systemStats?.arch ?? systemStats?.architecture ?? "x86_64";
+
+  return (
+    <div className={`flex flex-wrap items-center gap-2 sm:gap-4 px-3 py-1.5 rounded-lg text-[11px] font-mono shrink-0 ${
+      brutalist
+        ? "bg-white border-2 border-[#111] text-[#111]"
+        : isDarkMode
+          ? "bg-gray-900/80 border border-gray-800 text-gray-300"
+          : "bg-gray-100 border border-gray-200 text-gray-700"
+    }`}>
+      <div className="flex items-center gap-1.5 font-bold uppercase tracking-wider text-[10px] opacity-75">
+        <Server size={13} className={brutalist ? "" : "text-blue-400"} />
+        <span>Host:</span>
+        <span className="text-emerald-500 font-bold">{osInfo}</span>
+        <span className="opacity-60 text-[9px]">({arch})</span>
+      </div>
+
+      <div className="h-3 w-px bg-gray-500/30 hidden sm:block" />
+
+      <div className="flex items-center gap-1.5">
+        <Cpu size={12} className={brutalist ? "" : "text-amber-400"} />
+        <span className="opacity-60">CPU:</span>
+        <span className={`font-bold ${cpuPct > 80 ? "text-red-400" : cpuPct > 50 ? "text-amber-400" : "text-emerald-400"}`}>
+          {cpuPct}%
+        </span>
+      </div>
+
+      <div className="flex items-center gap-1.5">
+        <HardDrive size={12} className={brutalist ? "" : "text-cyan-400"} />
+        <span className="opacity-60">RAM:</span>
+        <span className={`font-bold ${ramPct > 85 ? "text-red-400" : ramPct > 60 ? "text-amber-400" : "text-cyan-400"}`}>
+          {ramPct}%
+        </span>
+      </div>
+
+      {cpuTemp !== undefined && cpuTemp !== null && (
+        <div className="flex items-center gap-1.5">
+          <Thermometer size={12} className={brutalist ? "" : "text-rose-400"} />
+          <span className="opacity-60">Temp:</span>
+          <span className="font-bold text-rose-400">
+            {Number(cpuTemp).toFixed(0)}°C
+          </span>
+        </div>
       )}
     </div>
   );
@@ -540,18 +643,21 @@ export function DashboardGrid({ isDarkMode }) {
 
   return (
       <div className="flex-1 min-h-0 overflow-y-auto pr-1 flex flex-col">
-        <div className="flex justify-end gap-2 mb-2 shrink-0">
-          {!isLocked && (
-            <button onClick={resetLayout} className="text-xs px-2 py-1 rounded bg-red-500/20 text-red-500 hover:bg-red-500/40">
-              Reset Default Layout
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2 shrink-0">
+          <SystemStatsStrip isDarkMode={isDarkMode} />
+          <div className="flex items-center gap-2 ml-auto">
+            {!isLocked && (
+              <button onClick={resetLayout} className="text-xs px-2 py-1 rounded bg-red-500/20 text-red-500 hover:bg-red-500/40">
+                Reset Default Layout
+              </button>
+            )}
+            <button
+              onClick={() => setIsLocked(!isLocked)}
+              className={`flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors ${isLocked ? 'bg-gray-500/10 text-gray-400 hover:bg-gray-500/20' : 'bg-emerald-500 text-white'}`}
+            >
+              {isLocked ? <><Lock size={12}/> Unlock Dashboard</> : <><Unlock size={12}/> Lock Layout</>}
             </button>
-          )}
-          <button
-            onClick={() => setIsLocked(!isLocked)}
-            className={`flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors ${isLocked ? 'bg-gray-500/10 text-gray-400 hover:bg-gray-500/20' : 'bg-emerald-500 text-white'}`}
-          >
-            {isLocked ? <><Lock size={12}/> Unlock Dashboard</> : <><Unlock size={12}/> Lock Layout</>}
-          </button>
+          </div>
         </div>
 
         <div className="flex-1 min-h-0 pb-10">

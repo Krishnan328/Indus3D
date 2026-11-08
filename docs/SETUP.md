@@ -619,5 +619,136 @@ y_shaper_type   = mzv
 | `adhesion_score` | 0–1 | Sintering healing degree D_h | D_h < 0.95 -> M106 trim |
 | `undercooling_c` | degC | Graetz nozzle exit deficit | > 1 degC -> M104 boost |
 | `warpage_mm` | mm | Part warpage height estimate | > 0.35 mm -> Z-hop |
-| `nozzle_status` | string | NORMAL / CLOG / STRIPPING | CLOG -> PAUSE |
+| `nozzle_status` | string | NORMAL / CLOG / STRIPPING / DUAL_CLOG | CLOG / DUAL_CLOG -> PAUSE |
+| `thermal_ratio` | — | Thermodynamic mass-flow ratio (Group O) | < 0.45 + TMC alarm -> PAUSE |
 | `ra_predicted_um` | um | Predicted surface roughness Ra | > target -> M220 |
+
+---
+
+### 10.8 Thermodynamic PWM Clog Observer (Group O)
+
+Estimates mass flow rate dynamically from heater block PWM duty cycle and nozzle temperature using a first-law energy balance:
+
+$$\dot{Q}_{heater} - \dot{Q}_{loss} = \dot{m} \left( c_p \Delta T + \Delta h_{fusion} \right)$$
+
+$$\dot{m}_{thermal} = \frac{\text{PWM} \cdot W_{heater} - h_{loss} (T_{nozzle} - T_{ambient})}{c_p (T_{nozzle} - T_{ambient}) + \Delta h_{fusion}}$$
+
+When commanded volumetric flow is high but estimated thermal mass flow drops significantly ($\text{thermal\_ratio} = \dot{m}_{thermal} / \dot{m}_{cmd} < 0.45$), a clog is suspected. When both the thermodynamic observer and the TMC extruder motor back-EMF observer alarm simultaneously, `nozzle_status` escalates to `DUAL_CLOG_WARNING` and automatically pauses the print.
+
+**`indus_overrides.cfg` parameters:**
+```ini
+heater_rated_w   = 40.0    # Nozzle heater cartridge wattage (W)
+t_ambient_c      = 25.0    # Ambient / enclosure temperature (°C)
+```
+
+---
+
+## 11. Multi-Tier Computer Vision & Defect Detection Architecture
+
+Indus3D features an edge-decoupled, compute-budgeted vision pipeline structured across **4 hardware device tiers**. This guarantees metrology-grade defect detection without ever starving Klipper kinematics or overloading low-cost Raspberry Pi boards.
+
+### Device-Tier Support Matrix
+
+| Tier | Target Hardware | Compute Budget | Active Vision Modules | Detection Modality |
+|---|---|---|---|---|
+| **Tier 0** | Raspberry Pi 3 / Zero 2W / Budget SBC | < 2% CPU, < 25 MB RAM | • Thermodynamic PWM Observer<br>• OpenCV Hu Moment Contour Inspector | Energy balance + geometric shape moments |
+| **Tier 1** | Raspberry Pi 4B (2GB–8GB) | ~15% single-core burst | • All Tier 0 modules<br>• Cambridge CAXTON (RAN-56 ONNX) | 4-head classifier (flow, speed, Z, temp) at layer change |
+| **Tier 2** | Raspberry Pi 5 (4GB–8GB) | ~25% single-core | • All Tier 1 modules<br>• ProtoNet (ShuffleNetV2 few-shot) | Metric-learning visual anomaly detection (~15 FPS) |
+| **Tier 3** | Desktop / Workstation / x86 Server | Full CPU/GPU acceleration | • All Tier 0–2 modules<br>• YOLOv8 real-time failure detector | 1–30 FPS bounding box detection (spaghetti, detachment) |
+
+---
+
+### Tier 0: Baseline Geometric Contour Matching (All Devices)
+- **Engine**: OpenCV Gaussian adaptive thresholding + 7-element log-Hu moments.
+- **Latency**: `< 5 ms` per frame.
+- **Reference**: Compared against bundled `workers/data/benchy_contours.json` or custom reference sidecar.
+- **Anomaly Score**: Normalised Mahalanobis distance squashed through sigmoid activation ($[0.0, 1.0]$).
+
+### Tier 1: Cambridge CAXTON 4-Head Classifier (Raspberry Pi 4B+)
+- **Architecture**: Residual Attention Network (RAN-56) with 4 task heads.
+- **Inference Runtime**: CPU-only `onnxruntime` (~7 MB footprint, no PyTorch needed on printer).
+- **Execution Strategy**: Triggered during `M400` toolhead parking at layer changes to avoid motion blur.
+- **Corrective Actions**:
+  - Head 0 (Extrusion State): Low $\rightarrow$ `M221 S+5%`, High $\rightarrow$ `M221 S-5%`
+  - Head 1 (Speed State): Visual feedback for kinematic lag
+  - Head 2 (Z-Offset State): Low $\rightarrow$ `SET_GCODE_OFFSET Z=+0.02`, High $\rightarrow$ `SET_GCODE_OFFSET Z=-0.02`
+  - Head 3 (Temperature State): Low $\rightarrow$ `M104 S+5`, High $\rightarrow$ `M104 S-5`
+
+### Tier 2: Few-Shot Prototypical Network (Raspberry Pi 5)
+- **Backbone**: ShuffleNetV2-x0.5 with stripped classification head (1024-d embeddings).
+- **Inference**: Euclidean distance in metric embedding space against support prototypes (`prototypes.npz`).
+- **Advantage**: Requires only 5–10 "good" and "bad" reference images from user's printer to adapt to new filaments, lighting, or bed textures.
+
+### Tier 3: Real-Time YOLOv8 Bounding-Box Detection (Desktop / Pi 5)
+- **Model**: `3dai_best.pt` pre-trained cross-printer weights (YOLOv8s, 19 MB).
+- **Classes**: Detects spaghetti failures, bed detachments, and severe layer shifts.
+- **Reporting**: Dispatches alerts to `/api/v1/edge/inspection-alert` which triggers coordinated print pauses via Moonraker.
+
+---
+
+## 12. NixOS Deployment (Klipper Host Machine)
+
+For deployment, secrets, backup/recovery, and the controlled-calibration
+safety model, see [NixOS operations](NIXOS_OPERATIONS.md).
+
+Indus3D provides a native NixOS module (`nix/modules/indus3d.nix`) modelled directly after the upstream [`nixpkgs/nixos/modules/services/misc/klipper.nix`](https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/services/misc/klipper.nix).
+
+### Features of the Indus3D NixOS Module
+- **Declarative & Reproducible**: Builds the Python backend, Rust DSP binary (`indus3d-dsp`), and native dependencies (`ffmpeg`, `opencv`) into isolated `/nix/store` paths.
+- **Auto-Klipper Integration**: Automatically injects `[gcode_macro PAUSE_INDUS3D]` and `[gcode_macro CANCEL_INDUS3D]` into `services.klipper.settings`.
+- **Auto-Moonraker Integration**: Configures Moonraker CORS domains and trusted clients so the Indus3D dashboard can interact with the printer without manual JSON edits.
+- **Mutable vs Declarative Config**: Supports both pure NixOS declarative configuration (`services.indus3d.settings`) or mutable live editing (`services.indus3d.mutableConfig = true`).
+- **Serial Port & Systemd Security**: Configured with `DynamicUser = true`, `SupplementaryGroups = [ "dialout" ]` for PZEM-004T / ADXL345 sensors, and automatic restart policies.
+
+### Example Configuration (`/etc/nixos/configuration.nix`)
+
+```nix
+{ config, pkgs, ... }:
+
+{
+  imports = [
+    # If using Flakes:
+    # inputs.indus3d.nixosModules.default
+    # Or importing directly from local clone:
+    /path/to/Indus3D/nix/modules/indus3d.nix
+  ];
+
+  # 1. Klipper Service
+  services.klipper = {
+    enable = true;
+    # settings = ...
+  };
+
+  # 2. Moonraker Service
+  services.moonraker = {
+    enable = true;
+    address = "0.0.0.0";
+    port = 7125;
+  };
+
+  # 3. Indus3D Digital Twin & Quality Controller
+  services.indus3d = {
+    enable = true;
+    openFirewall = true; # Opens TCP port 5001 for web dashboard
+    deviceTier = 1;      # 0: Pi 3, 1: Pi 4B, 2: Pi 5, 3: Desktop
+
+    # Declarative overrides (generated via pkgs.formats.ini)
+    settings = {
+      indus3d = {
+        layer_height_mm = 0.2;
+        target_ra_um = 12.0;
+        heater_rated_w = 40.0;
+        t_ambient_c = 25.0;
+      };
+    };
+  };
+}
+```
+
+Rebuild your NixOS system:
+```bash
+sudo nixos-rebuild switch
+systemctl status indus3d.service
+```
+
+

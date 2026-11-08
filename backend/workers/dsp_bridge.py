@@ -31,14 +31,19 @@ import json
 import logging
 import math
 import os
+import shutil
 import socket
 import struct
 import subprocess
 import threading
 import time
 
-_DSP_BIN = os.path.join(
-    os.path.dirname(__file__), "..", "dsp", "target", "release", "indus3d-dsp"
+_DSP_BIN = (
+    os.environ.get("INDUS3D_DSP_BIN")
+    or shutil.which("indus3d-dsp")
+    or os.path.join(
+        os.path.dirname(__file__), "..", "dsp", "target", "release", "indus3d-dsp"
+    )
 )
 _IN_PORT        = 3200   # Rust binary listens here for raw ADXL data
 _OUT_PORT       = 3201   # Rust binary sends slow-path processed JSON here
@@ -61,6 +66,7 @@ class DspBridge:
     def __init__(self):
         self.latest: dict | None = None           # {x: {...}, y: {...}, z: {...}}
         self.latest_collision: dict | None = None  # CollisionEvent or None
+        self.latest_autoz: dict | None = None      # AutoZ Friction & Contact dict
         self._proc: subprocess.Popen | None = None
         self._running = False
         self._out_sock: socket.socket | None = None    # sender to Rust :3200
@@ -225,15 +231,28 @@ class DspBridge:
             try:
                 n, _ = self._in_sock.recvfrom_into(buf)
                 payload = json.loads(buf[:n].decode())
-                self.latest = {
-                    "x": _normalise_axis(payload.get("x", {})),
-                    "y": _normalise_axis(payload.get("y", {})),
-                    "z": _normalise_axis(payload.get("z", {})),
-                }
+                if isinstance(payload, dict):
+                    self.latest = {
+                        "x": _normalise_axis(payload.get("x")),
+                        "y": _normalise_axis(payload.get("y")),
+                        "z": _normalise_axis(payload.get("z")),
+                    }
+                    if "auto_z" in payload and isinstance(payload["auto_z"], dict):
+                        az = payload["auto_z"]
+                        self.latest_autoz = {
+                            "is_contact": bool(az.get("is_contact", False)),
+                            "hffi": _to_float(az.get("hffi", 0.0)),
+                            "jerk_z": _to_float(az.get("jerk_z", 0.0)),
+                            "kurtosis_z": _to_float(az.get("kurtosis_z", 0.0)),
+                            "regime": str(az.get("regime", "optimal")),
+                            "recommended_trim": _to_float(az.get("recommended_trim", 0.0)),
+                        }
             except socket.timeout:
                 pass
             except (json.JSONDecodeError, OSError):
                 pass
+            except Exception as exc:
+                logging.debug("Error in _spectral_listen_loop: %s", exc)
 
     def _collision_listen_loop(self):
         """Receive fast-path CollisionEvent JSON from Rust (port 3202)."""
@@ -249,17 +268,32 @@ class DspBridge:
                 pass
             except (json.JSONDecodeError, OSError):
                 pass
+            except Exception as exc:
+                logging.debug("Error in _collision_listen_loop: %s", exc)
 
 
-def _normalise_axis(d: dict) -> dict:
+def _to_float(val, default: float = 0.0) -> float:
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        import math
+        return default if math.isnan(f) or math.isinf(f) else f
+    except (ValueError, TypeError):
+        return default
+
+
+def _normalise_axis(d) -> dict:
     """Map Rust field names to canonical Python names."""
+    if not isinstance(d, dict):
+        d = {}
     return {
-        "rms":           float(d.get("rms",            0.0)),
-        "peak_hz":       float(d.get("hz",             0.0)),
-        "kurtosis":      float(d.get("kurtosis",       0.0)),
-        "magnitude":     float(d.get("mag",            0.0)),
-        "stiffness":     float(d.get("stiffness",      0.0)),
-        "torque_ripple": float(d.get("torque_ripple",  0.0)),
+        "rms":           _to_float(d.get("rms")),
+        "peak_hz":       _to_float(d.get("hz")),
+        "kurtosis":      _to_float(d.get("kurtosis")),
+        "magnitude":     _to_float(d.get("mag")),
+        "stiffness":     _to_float(d.get("stiffness")),
+        "torque_ripple": _to_float(d.get("torque_ripple")),
     }
 
 

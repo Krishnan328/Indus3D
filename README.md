@@ -21,11 +21,13 @@ Indus3D is an open-source, real-time digital twin and closed-loop quality contro
 
 ### 2. High-Speed Rust DSP Pipeline (`backend/dsp`)
 - **Binary ADXL Streaming**: 14-byte packed little-endian binary protocol (`IDX` header) streaming raw 3200 Hz accelerometer counts with low MCU overhead.
+- **Auto Z-Offset & Tribo-Acoustic Bed Friction Engine**: Computes the real-time High-Frequency Friction Index (HFFI: $1200 - 1600\text{ Hz}$ vs $20 - 400\text{ Hz}$) and microsecond-grade kinematic jerk spikes ($j_z > 400\text{ g/s}$). Differentiates nozzle bed rubbing from under-squished extrusions.
 - **Fast-Path Collision & Impact Detector**: Real-time g-force spike and kurtosis impulse detection debounced at sub-millisecond intervals. Instantly triggers safety alerts and pauses the print upon toolhead crash or severe layer knock.
 - **Slow-Path Spectral Telemetry with Motor Notch Filtering**: 1-Hz Hanning-windowed FFT calculating RMS, peak resonance frequency, kurtosis, and dynamic stiffness. Actively notches out motor step harmonics ($f = v \times \text{steps/mm}$) using velocity metadata from Python.
 - **Standalone CLI Resonance Analyser**: Parses Klipper `TEST_RESONANCES` CSV data, measures PSD half-power bandwidth damping ratio ($\zeta$), and recommends optimal input shapers (ZV, MZV, EI, 2HUMP_EI).
 
 ### 3. Autopilot Closed-Loop Quality Controller
+- **Auto-Z Bed Adhesion Closed-Loop Trimming**: Automatically trims Klipper Z-offset on layer 1 via `SET_GCODE_OFFSET Z_ADJUST=... MOVE=1` when tribo-acoustic rubbing or under-squish is detected, relieving bed scraping and ensuring strong polymer wetting.
 - **Adaptive Flow Control (`M221`)**: Detects extrusion variations in real time and trims flow rate within safe physical bounds (85%–115%).
 - **Speed-Lag Compensation (`M220`)**: Automatically throttles print speed when positional lag exceeds mechanical compliance thresholds, smoothly recovering when lag clears.
 - **Dynamic Pressure Advance**: Adapts Klipper's `SET_PRESSURE_ADVANCE` on the fly based on volumetric flow rate and shear-thinning polymer rheology.
@@ -87,20 +89,62 @@ Indus3D is an open-source, real-time digital twin and closed-loop quality contro
 
 ## 🚀 Quickstart & Installation
 
-### Prerequisites
-- Python 3.9 or higher
-- Node.js 18 or higher & npm
-- Klipper & Moonraker (for physical printer connection)
+Indus3D supports two official installation targets depending on your operating system:
 
-### Automated Install (Raspberry Pi / Linux)
-The automated installer configures the Python virtual environment, compiles the frontend SPA for low-memory standalone hosting, configures Moonraker's update manager, symlinks Klipper vibration modules, and installs the `indus3d.service` systemd daemon:
+### 1. Debian / Raspberry Pi OS / Ubuntu
 
+#### Option A: KIAUH Extension (Recommended for standard Klipper setups)
+Register the extension from this preview branch:
 ```bash
-git clone https://github.com/Krishnan328/Indus3D.git
-cd Indus3D
+git clone --branch codex/packaging-fixes https://github.com/Krishnan328/Indus3D.git ~/indus3d
+cd ~/indus3d
+bash integrations/kiauh/install-extension.sh
+```
+Then run `./kiauh/kiauh.sh`, navigate to **`[E]xtensions`**, and choose **`Indus3D`** -> **`[1] Install`**.
+
+#### Option B: Standalone Debian Installer
+```bash
+git clone --branch codex/packaging-fixes https://github.com/Krishnan328/Indus3D.git ~/indus3d
+cd ~/indus3d
 ./install.sh
 ```
 Once installed, your dashboard is accessible at `http://<your-pi-ip>:5001`.
+The installer builds the dashboard and Rust DSP before starting the service.
+It requires Node.js 20.19+ or 22.12+ and a Cargo version that supports the
+committed lockfile. If the distribution packages are too old, installation
+stops with an error; install supported toolchains and retry. No Python DSP
+fallback is provided. Updates refuse locally modified checkouts rather than
+overwriting printer configuration.
+
+### 2. NixOS (Declarative Flake & Module)
+For NixOS hosts (such as `nixos-ks`), Indus3D provides a native Nix Flake and sandboxed systemd service module:
+
+```nix
+# In your host flake inputs:
+inputs.indus3d.url = "github:Krishnan328/Indus3D?ref=codex/packaging-fixes";
+
+# In your NixOS configuration modules:
+modules = [
+  indus3d.nixosModules.indus3d
+  {
+    services.indus3d = {
+      enable = true;
+      port = 5001;
+      openFirewall = true;
+      # Connect to an existing printer stack without modifying its configuration.
+      klipperIntegration = false;
+      moonrakerIntegration = false;
+      moonrakerHost = "127.0.0.1";
+      moonrakerPort = 7125;
+    };
+  }
+];
+```
+Apply with:
+```bash
+sudo nixos-rebuild switch --flake .#nixos-ks
+```
+For complete details, see [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
 
 ### Manual Setup
 

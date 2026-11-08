@@ -23,7 +23,7 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]', argsIgnorePattern: '^[A-Z_]' }],
       // These draft editors intentionally synchronize API-loaded settings into
       // editable local state. The React Compiler advisory treats that common
       // form pattern as a cascading-render risk even though each sync is
@@ -31,6 +31,11 @@ export default defineConfig([
       'react-hooks/set-state-in-effect': 'off',
       // Relative timestamps are intentionally calculated while rendering.
       'react-hooks/purity': 'off',
+      // Three.js buffers are updated from @react-three/fiber's frame loop;
+      // these are imperative GPU resources rather than React render state.
+      'react-hooks/immutability': 'off',
+      'react-hooks/refs': 'off',
+      'react-refresh/only-export-components': 'off',
     },
   },
   {

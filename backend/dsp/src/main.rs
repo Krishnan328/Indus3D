@@ -260,6 +260,17 @@ fn main() -> std::io::Result<()> {
                     let res_y = slow_y.process_window(&buf_y[..WINDOW_SIZE], step_freq_hz);
                     let res_z = slow_z.process_window(&buf_z[..WINDOW_SIZE], step_freq_hz);
 
+                    // Composite Auto-Z friction and bed-contact metrics over the three axes
+                    let auto_z_hffi = (res_x.auto_z.hffi + res_y.auto_z.hffi + res_z.auto_z.hffi) / 3.0;
+                    let auto_z_contact = res_x.auto_z.is_contact || res_y.auto_z.is_contact || res_z.auto_z.is_contact;
+                    let (auto_z_regime, auto_z_trim) = if auto_z_hffi > 0.38 {
+                        ("rubbing", 0.025f32)
+                    } else if auto_z_hffi < 0.05 && res_x.rms > 0.02 {
+                        ("under_squish", -0.015f32)
+                    } else {
+                        ("optimal", 0.0f32)
+                    };
+
                     let payload = serde_json::json!({
                         "x": {
                             "hz": res_x.peak_hz, "mag": res_x.max_magnitude,
@@ -286,6 +297,14 @@ fn main() -> std::io::Result<()> {
                             "notched_hz": res_z.notched_hz,
                         },
                         "step_freq_hz": step_freq_hz,
+                        "auto_z": {
+                            "is_contact": auto_z_contact,
+                            "hffi": auto_z_hffi,
+                            "jerk_z": res_z.auto_z.peak_jerk,
+                            "kurtosis_z": res_z.kurtosis,
+                            "regime": auto_z_regime,
+                            "recommended_trim": auto_z_trim,
+                        },
                     });
 
                     if let Ok(msg) = serde_json::to_string(&payload) {

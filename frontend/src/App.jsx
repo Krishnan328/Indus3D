@@ -7,12 +7,14 @@ import { ThemeSwitcher } from "./ThemeSwitcher";
 import { DashboardGrid } from "./DashboardGrid";
 import { DigitalTwinPage } from "./DigitalTwinPage";
 import { FleetPage } from "./FleetPage";
+import { PrinterLabPage } from "./PrinterLabPage";
 import { IncidentModal } from "./IncidentModal";
+import { KlippyStateBanner } from "./KlippyStateBanner";
 import { FileManager } from "./FileManager";
 import { SystemPage } from "./SystemPage";
 import { ConfigEditor, HeightmapModal, PowerModal } from "./Modals";
 import { SettingsModal } from "./SettingsModal";
-import { CalibrationWizard } from "./CalibrationWizard";
+import { ControlledCalibrationWizard } from "./ControlledCalibrationWizard";
 import { SpoolManager } from "./SpoolManager";
 import { TouchUI } from "./TouchUI";
 import { LoginScreen } from "./LoginScreen";
@@ -242,9 +244,39 @@ function TopHeader() {
   const fault   = useStore((s) => s.telemetry?.fault);
   const alerts  = useStore((s) => s.alerts);
   const simMode = useStore((s) => s.simMode);
+  const online  = useStore((s) => s.telemetry?.online !== false);
+  const klippyState = useStore((s) => (s.telemetry?.klippy_state || "ready").toLowerCase());
+  const klippyConnected = useStore((s) => s.telemetry?.klippy_connected !== false);
   const t = useThemeTokens();
   const brutalist = useIsBrutalist();
   const soft = useIsSoft();
+
+  const isShutdown = klippyState === "shutdown";
+  const isDisconnected = klippyState === "disconnected" || (!klippyConnected && online);
+  const isError = klippyState === "error";
+  const isOffline = !online || klippyState === "offline";
+
+  let statusLabel = "Live";
+  let dotColor = "bg-green-500";
+  if (isShutdown) {
+    statusLabel = "KLIPPER SHUTDOWN";
+    dotColor = "bg-red-500";
+  } else if (isError) {
+    statusLabel = "KLIPPER ERROR";
+    dotColor = "bg-red-500";
+  } else if (isOffline) {
+    statusLabel = "MOONRAKER OFFLINE";
+    dotColor = "bg-red-500";
+  } else if (isDisconnected) {
+    statusLabel = "DISCONNECTED";
+    dotColor = "bg-amber-500";
+  } else if (fault) {
+    statusLabel = "SYSTEM FAULT";
+    dotColor = "bg-red-500";
+  } else if (simMode) {
+    statusLabel = "SIM MODE";
+    dotColor = "bg-blue-400";
+  }
 
   const powerAction = useStore(s => s.powerAction);
 
@@ -277,10 +309,16 @@ function TopHeader() {
           </div>
         )}
         <ThemeSwitcher />
-        <div className={`flex items-center gap-2 px-3 py-1.5 ${t.chip} ${brutalist ? "bg-white" : t.cell}`}>
-          <div className={`w-2.5 h-2.5 rounded-full animate-pulse ${fault ? "bg-red-500" : "bg-green-500"}`} />
-          <span className="text-[10px] uppercase tracking-widest font-semibold">
-            {simMode ? "SIM MODE" : fault ? "SYSTEM FAULT" : "Live"}
+        <div className={`flex items-center gap-2 px-3 py-1.5 ${t.chip} ${
+          isShutdown || isError || isOffline 
+            ? (brutalist ? "bg-[#FF3333] text-white border-2 border-[#111]" : "border border-red-500/50 bg-red-950/50 text-red-300 shadow-md shadow-red-950/50") 
+            : isDisconnected 
+            ? (brutalist ? "bg-[#FFAA00] text-[#111] border-2 border-[#111]" : "border border-amber-500/50 bg-amber-950/50 text-amber-300 shadow-md shadow-amber-950/50")
+            : (brutalist ? "bg-white text-[#111]" : t.cell)
+        }`}>
+          <div className={`w-2.5 h-2.5 rounded-full ${dotColor} ${isShutdown || isError || isOffline ? "animate-ping" : "animate-pulse"}`} />
+          <span className="text-[10px] uppercase tracking-widest font-extrabold">
+            {statusLabel}
           </span>
         </div>
       </div>
@@ -363,12 +401,13 @@ export default function App() {
       />
       <div className="flex-1 relative flex flex-col p-4 min-w-0">
         <TopHeader />
+        <KlippyStateBanner />
         <ProfileBar isDarkMode={isDarkMode} />
         <AlertBar />
         {showEditor    && <ConfigEditor   isDarkMode={isDarkMode} onClose={() => setShowEditor(false)} />}
         {showHeightmap && <HeightmapModal isDarkMode={isDarkMode} onClose={() => setShowHeightmap(false)} />}
         {showSettings  && <SettingsModal onClose={() => setShowSettings(false)} onOpenSystem={() => { setShowSettings(false); setPage("system"); }} />}
-        {showCalibration && <CalibrationWizard onClose={() => setShowCalibration(false)} />}
+        {showCalibration && <ControlledCalibrationWizard onClose={() => setShowCalibration(false)} />}
         {showPower && <PowerModal onClose={() => setShowPower(false)} />}
         {showSpools && <SpoolManager onClose={() => setShowSpools(false)} />}
         {telemetryState === "error" && !dismissedIncident && <IncidentModal onClose={() => setDismissedIncident(true)} />}
@@ -377,6 +416,7 @@ export default function App() {
           : page === "fleet" ? <FleetPage isDarkMode={isDarkMode} />
           : page === "files" ? <FileManager />
           : page === "system" ? <SystemPage />
+          : page === "lab" ? <PrinterLabPage />
           : <DigitalTwinPage isDarkMode={isDarkMode} />}
       </div>
     </div>

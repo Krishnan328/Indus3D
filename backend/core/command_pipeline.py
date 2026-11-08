@@ -30,7 +30,8 @@ def tick(snap: dict, source: str = "live") -> None:
 
 
 def run_quality_cycle(controller, snap: dict, kin: dict, thm: dict, ext: dict,
-                      send: Callable[[str], Optional[bool]], source: str = "live") -> List[dict]:
+                      send: Callable[[str], Optional[bool]], source: str = "live",
+                      autoz: Optional[dict] = None) -> List[dict]:
     """Run one controller update and dispatch its commands.
 
     Returns one result dict per command actually sent.
@@ -38,7 +39,8 @@ def run_quality_cycle(controller, snap: dict, kin: dict, thm: dict, ext: dict,
     now = time.time()
     hooks.emit("controller.inputs", snap, kin, thm, ext,
                {"source": source, "now": now, "autopilot": bool(controller.auto_pilot)})
-    commands = controller.update(snap, kin, thm, ext)
+    commands = controller.update(snap, kin, thm, ext, autoz) if autoz is not None \
+        else controller.update(snap, kin, thm, ext)
 
     ctx = {
         "source": source,

@@ -79,15 +79,34 @@ function SensorFusionCard() {
   return (
     <div className="flex flex-col gap-5">
       <div className={`p-4 ${t.panel}`}>
-        <div className="flex items-center gap-2 mb-4 text-yellow-500"><Zap size={18} /><h3 className={t.heading}>Power Delivery</h3></div>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2 text-yellow-500">
+            <Zap size={18} />
+            <h3 className={t.heading}>Power Delivery (PZEM-004T)</h3>
+          </div>
+          {power.connected && (
+            <span className="text-[10px] font-mono text-emerald-400 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+              LIVE
+            </span>
+          )}
+        </div>
         <div className="grid grid-cols-3 gap-2 text-center font-mono text-sm">
           {power.connected === false && power.voltage == null
-            ? <div className={`col-span-3 p-2 opacity-50 ${t.cell}`}>Not connected</div>
-            : [["Voltage", power.voltage != null ? `${power.voltage.toFixed(1)} V` : "—"],
-               ["Current", power.current != null ? `${power.current.toFixed(2)} A` : "—"],
-               ["Active Load", power.power != null ? `${power.power.toFixed(1)} W` : "—"]].map(([l, v]) => (
-              <div key={l} className={`p-2 ${t.cell}`}><span className={t.label}>{l}</span>{v}</div>
-            ))
+            ? <div className={`col-span-3 p-2 opacity-50 ${t.cell}`}>PZEM-004T Not connected</div>
+            : [
+                ["Voltage", power.voltage != null ? `${power.voltage.toFixed(1)} V` : "—"],
+                ["Current", power.current != null ? `${power.current.toFixed(2)} A` : "—"],
+                ["Active Load", (power.power != null || power.power_w != null) ? `${(power.power ?? power.power_w).toFixed(1)} W` : "—"],
+                ["Energy", (power.energy != null || power.energy_wh != null)
+                  ? ((power.energy ?? power.energy_wh) >= 1000
+                      ? `${((power.energy ?? power.energy_wh) / 1000).toFixed(2)} kWh`
+                      : `${power.energy ?? power.energy_wh} Wh`)
+                  : "—"],
+                ["Frequency", power.frequency != null ? `${power.frequency.toFixed(1)} Hz` : "—"],
+                ["Power Factor", power.power_factor != null ? `${power.power_factor.toFixed(2)}` : "—"],
+              ].map(([l, v]) => (
+                <div key={l} className={`p-2 ${t.cell}`}><span className={t.label}>{l}</span>{v}</div>
+              ))
           }
         </div>
       </div>

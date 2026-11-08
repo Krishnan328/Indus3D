@@ -18,11 +18,12 @@ import time
 
 from digital_twin.quality_controller import quality_controller
 from services.moonraker_client import MoonrakerClient
+from config.loader import get_overrides_path
 
 _client = MoonrakerClient()
 _TIMEOUT_S = 150
 _POLL_INTERVAL_S = 3
-_CFG_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "indus_overrides.cfg")
+_CFG_PATH = get_overrides_path()
 
 
 def _patterns_for_axis(axis: str):

@@ -568,17 +568,21 @@ def limited():
 
 def test_system_writes_use_the_strict_rate_limit_not_ui_adjust(limited, moon):
     ip = {"REMOTE_ADDR": "9.9.9.9"}
+    from api import rate_limiter as rl
+    lim = rl._LIMITS["hardware_cmd"][0]
     codes = [limited.post("/api/v1/system/services/crowsnest/restart", json={"confirmed": True}, environ_base=ip).status_code
-             for _ in range(11)]
-    assert codes[:10] == [200] * 10 and codes[10] == 429
+             for _ in range(lim + 1)]
+    assert codes[:lim] == [200] * lim and codes[lim] == 429
     assert limited.post("/api/v1/system/backups", json={}, environ_base=ip).get_json()["category"] == "hardware_cmd"
 
 
 def test_deleting_a_backup_counts_toward_the_strict_limit(limited, moon):
     ip = {"REMOTE_ADDR": "9.9.9.8"}
+    from api import rate_limiter as rl
+    lim = rl._LIMITS["hardware_cmd"][0]
     codes = [limited.delete("/api/v1/system/backups/old.db", json={"confirmed": True}, environ_base=ip).status_code
-             for _ in range(11)]
-    assert codes[10] == 429
+             for _ in range(lim + 1)]
+    assert codes[lim] == 429
 
 
 def test_reads_are_not_counted_as_hardware_commands(limited, moon):

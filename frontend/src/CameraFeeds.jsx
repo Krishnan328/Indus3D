@@ -93,7 +93,10 @@ export function CameraFeeds({ isDarkMode }) {
             <img
               src={activeCam.stream_url}
               alt={activeCam.name || "Live cam"}
-              className="absolute inset-0 w-full h-full object-contain"
+              className="absolute inset-0 w-full h-full object-contain transition-transform"
+              style={{
+                transform: `rotate(${activeCam.rotation || 0}deg) ${activeCam.flip_h ? "scaleX(-1)" : ""} ${activeCam.flip_v ? "scaleY(-1)" : ""}`.trim()
+              }}
               onError={(e) => {
                 e.target.style.display = "none";
                 e.target.nextSibling.style.display = "flex";

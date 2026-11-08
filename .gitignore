@@ -1,83 +1,85 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# C extensions & Rust target
-*.so
-target/
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual environments
-.venv/
-venv/
-ENV/
-env/
-myenv/
-
-# IDE & OS files
+# OS and local editor artefacts
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-.vscode/
-.idea/
-*.swp
-*.swo
+__MACOSX/
+target/
+**/target/
+.venv/
+**/.venv/
 
-# Node & Frontend
-node_modules/
-/frontend/dist/
-.vite/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# Testing & Coverage
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.nox/
-
-# Indus3D Runtime Data & Secrets
+# Runtime data and credentials — never commit a printer's history, logs,
+# reports, or Flask session secret.
 /backend/.flask_secret_key
-/backend/.env
-/frontend/.env
-*.log
-/backend/logs/*.log
-/backend/reports/*.html
-/backend/reports/*.pdf
-/backend/reports/*.json
-/backend/db/*.db
-/backend/db/*.sqlite3
-/backend/data/timelapse/*
-!/backend/data/timelapse/.gitkeep
-/backend/data/bed/*.stl
-!/backend/data/bed/custom_bed.json
+/backend/db/flight_record.db
+/backend/logs/
+/backend/reports/
 /backend/edge/models/*.pt
-!/backend/edge/models/.gitkeep
+/backend/edge/models/*.onnx
+/backend/edge/models/*.npz
+/logs/
+
+# The uploaded archive includes AI-agent workspaces and a separate research
+# paper/equation-extraction project. They are useful local context, but are
+# not part of the Indus3D application or its deployable source tree.
+/.agents/
+/Indus3D_new_updates/
+/NEW PAPERS/
+/data/
+/scratch/
+/scripts/
+!/scripts/check_system_stability.py
+!/scripts/deploy_and_verify.sh
+/PROJECT.md
+/ORIGINAL_REQUEST.md
+/TEST_INFRA.md
+/TEST_READY.md
+/extracted_equations.md
+/extracted_equations/
+
+# One-off patching, extraction, and diagnostic artefacts from the archive.
+# Product tests remain under backend/tests/; these patterns are root-only.
+/patch*.py
+/patch*.js
+/patch*.patch
+/fix*.py
+/fix*.js
+/rewrite_*.py
+/test_*.py
+/test_*.js
+/test_*.mjs
+/transpiled*.js
+/transformed.js
+/scrape_error.js
+/categorize_equations.py
+/compile_master.py
+/export_annotated_gcode.py
+/filter_equations.py
+/summarize_equations.py
+/update_docs.py
+/print_routes.py
+/improvement_ideas.txt
+/maintenance_plan.md
+/new_*.jsx
+/frontend/src/*.diff
+/unify_twin.py
+
+# Archive-only patch generators and local visual-inspection utilities.
+/backend/api/patch_*.py
+/backend/patch_*.py
+/backend/ascii_plot.py
+/backend/benchy_plot.png
+/backend/complexity.py
+/backend/describe_image.py
+backend/data/bed/
+
+# Scratch & local data
+final sequence of research/
+.firecrawl/
+test.py
+test2.py
+test3.py
+*.gcode
+
+
+/frontend/dist/
+node_modules/
+

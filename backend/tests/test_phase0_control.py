@@ -262,7 +262,8 @@ def test_interactive_paths_use_the_higher_limit(limited):
 
 
 def test_ui_adjust_limit_is_a_429_that_never_bans(limited):
-    for _ in range(120):
+    lim = rl._LIMITS["ui_adjust"][0]
+    for _ in range(lim):
         assert post(limited, "/api/v1/control/jog", ip="9.9.9.4").status_code == 200
     for _ in range(10):                                                       # far more than 3 violations
         r = post(limited, "/api/v1/control/jog", ip="9.9.9.4")
@@ -272,14 +273,16 @@ def test_ui_adjust_limit_is_a_429_that_never_bans(limited):
     assert post(limited, "/api/v1/control/jog", ip="9.9.9.4").status_code == 200   # recovers, no ban
 
 
-def test_destructive_paths_keep_the_strict_limit(limited):
+def test_destructive_paths_keep_the_strict_limit_but_only_login_bans(limited):
+    lim = rl._LIMITS["hardware_cmd"][0]
+    assert lim < rl._LIMITS["ui_adjust"][0]
     for path in ("/api/v1/printer/restart", "/api/v1/control/home"):
         rl._requests.clear()
-        codes = [post(limited, path, ip="9.9.9.5").status_code for _ in range(11)]
-        assert codes[:10] == [200] * 10 and codes[10] == 429
-    for _ in range(3):
+        codes = [post(limited, path, ip="9.9.9.5").status_code for _ in range(lim + 1)]
+        assert codes[:lim] == [200] * lim and codes[lim] == 429
+    for _ in range(5):
         post(limited, "/api/v1/printer/restart", ip="9.9.9.5")
-    assert post(limited, "/api/v1/printer/restart", ip="9.9.9.5").status_code == 403   # still banned after repeats
+    assert "9.9.9.5" not in rl._bans                                          # operators are never locked out of the printer
 
 
 # ── arbiter ──────────────────────────────────────────────────────────────────────────

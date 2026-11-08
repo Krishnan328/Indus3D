@@ -25,7 +25,6 @@ export function BedSettingsModal({ onClose }) {
   const deleteBedStl = useStore((s) => s.deleteBedStl);
   const addCornerScrewsPreset = useStore((s) => s.addCornerScrewsPreset);
   const clearBedExclusions = useStore((s) => s.clearBedExclusions);
-  const updateBedConfig = useStore((s) => s.updateBedConfig);
 
   const [uploading, setUploading] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -33,7 +32,7 @@ export function BedSettingsModal({ onClose }) {
   const [testResult, setTestResult] = useState(null);
 
   // Manual screw form
-  const [screwForm, setScrewForm] = useState({ insetX: 30, insetY: 30, radius: 12 });
+  const screwForm = { insetX: 30, insetY: 30, radius: 12 };
 
   const borderClass = brutalist ? "border-[#111] border-2" : `border ${t.border}`;
 

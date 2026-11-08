@@ -264,15 +264,15 @@ export const useStore = create((set, get) => ({
   profile:       null,
   profileSource: "",
   bed: {
-    size_x_mm: 300,
-    size_y_mm: 300,
-    size_z_mm: 400,
+    size_x_mm: 320,
+    size_y_mm: 320,
+    size_z_mm: 380,
     origin_center: false,
     min_x: 0,
-    max_x: 300,
+    max_x: 320,
     min_y: 0,
-    max_y: 300,
-    printable_area: [[0, 0], [300, 0], [300, 300], [0, 300]],
+    max_y: 320,
+    printable_area: [[0, 0], [320, 0], [320, 320], [0, 320]],
     bed_exclude_area: [],
     clearance_height_mm: 10,
     has_custom_model: false,
@@ -319,11 +319,21 @@ export const useStore = create((set, get) => ({
 
   // ── Core telemetry ────────────────────────────────────────────────────────
   telemetry: {
-    x: 0, y: 0, z: 0, extTemp: 0, bedTemp: 0,
+    x: 0, y: 0, z: 0, live_x: 0, live_y: 0, live_z: 0,
+    cmd_x: 0, cmd_y: 0, cmd_z: 0,
+    velocity: 0,
+    timestamp: 0,
+    homed_axes: "", is_homed: false,
+    extTemp: 0, bedTemp: 0,
     extTarget: 0, bedTarget: 0,
     state: "standby", filename: "", file_position: 0, fault: false,
     progress: 0, print_duration: 0, time_remaining: 0,
-    speed_factor: 100, flow_factor: 100,
+    speed_factor: 100, flow_factor: 100, fan_speed: 0,
+    online: true,
+    klippy_state: "ready",
+    klippy_connected: true,
+    state_message: "",
+    device_temperatures: {},
   },
 
   kinematics: {
@@ -370,6 +380,90 @@ export const useStore = create((set, get) => ({
   // ── Live commands (quality controller + user) for terminal ────────────────
   // These come from the WS payload in live mode, or gcode_feed in sim mode
   liveCommands: [],
+  clearLiveCommands: () => set({ liveCommands: [] }),
+
+  // ── Bed Mesh Profiles ──────────────────────────────────────────────────────
+  bedMeshProfiles: { profile_name: "", profiles: {}, probed_matrix: [] },
+  fetchBedMeshProfiles: async () => {
+    try {
+      const res = await fetch(`${API}/api/v1/printer/bedmesh/profiles`);
+      if (res.ok) {
+        const data = await res.json();
+        set({ bedMeshProfiles: data });
+        return data;
+      }
+    } catch (e) {
+      console.error("Failed to fetch bed mesh profiles", e);
+    }
+    return null;
+  },
+  loadBedMeshProfile: async (name) => {
+    try {
+      const res = await fetch(`${API}/api/v1/printer/bedmesh/profile/load`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      await get().fetchBedMeshProfiles();
+      return await res.json();
+    } catch (e) {
+      return { error: e.toString() };
+    }
+  },
+  saveBedMeshProfile: async (name) => {
+    try {
+      const res = await fetch(`${API}/api/v1/printer/bedmesh/profile/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      await get().fetchBedMeshProfiles();
+      return await res.json();
+    } catch (e) {
+      return { error: e.toString() };
+    }
+  },
+  deleteBedMeshProfile: async (name) => {
+    try {
+      const res = await fetch(`${API}/api/v1/printer/bedmesh/profile/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      });
+      await get().fetchBedMeshProfiles();
+      return await res.json();
+    } catch (e) {
+      return { error: e.toString() };
+    }
+  },
+
+  // ── Endstops & System Stats ───────────────────────────────────────────────
+  endstopsState: null,
+  queryEndstops: async () => {
+    try {
+      const res = await fetch(`${API}/api/v1/printer/endstops`);
+      if (res.ok) {
+        const data = await res.json();
+        set({ endstopsState: data.endstops !== undefined ? data.endstops : data });
+        return data;
+      }
+    } catch (e) {
+      console.error("Failed to query endstops", e);
+    }
+    return null;
+  },
+  systemStats: null,
+  fetchSystemStats: async () => {
+    try {
+      const res = await fetch(`${API}/api/v1/printer/system/stats`);
+      if (res.ok) {
+        const data = await res.json();
+        set({ systemStats: data });
+        return data;
+      }
+    } catch (e) {
+      console.error("Failed to fetch system stats", e);
+    }
+    return null;
+  },
 
   // ── Sensors ───────────────────────────────────────────────────────────────
   power:            { voltage: 0, current: 0, power: 0 },
@@ -382,10 +476,11 @@ export const useStore = create((set, get) => ({
   printHistory:     [],
   maintenanceHints: [],
   maintenanceStatus: [],
-  maintenanceConfig: {},
+  maintenanceConfig: { nozzle_material: "Brass", filament_type: "Standard", structural_material: "PETG" },
 
   updateMaintenanceConfig: async (cfg) => {
     try {
+      set((s) => ({ maintenanceConfig: { ...s.maintenanceConfig, ...cfg } }));
       await fetch(`${API}/api/v1/maintenance/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -428,6 +523,45 @@ export const useStore = create((set, get) => ({
         }
       } catch (err) {
         console.warn("Failed to fetch lifetime stats", err);
+      }
+
+      // Telemetry fallback if WebSocket is closed, reconnecting, or silent
+      const ws = get().wsRef;
+      const lastWs = get().lastWsMsgTime || 0;
+      if (!ws || ws.readyState !== WebSocket.OPEN || Date.now() - lastWs > 1500) {
+        try {
+          const tr = await fetch(`${API}/api/v1/twin/state`);
+          if (tr.ok) {
+            const td = await tr.json();
+            set((s) => ({
+              telemetry: {
+                ...s.telemetry,
+                x: td.cmd_x ?? td.x ?? s.telemetry?.x ?? 0,
+                y: td.cmd_y ?? td.y ?? s.telemetry?.y ?? 0,
+                z: td.cmd_z ?? td.z ?? s.telemetry?.z ?? 0,
+                cmd_x: td.cmd_x ?? td.x ?? 0,
+                cmd_y: td.cmd_y ?? td.y ?? 0,
+                cmd_z: td.cmd_z ?? td.z ?? 0,
+                live_x: td.live_x ?? td.cmd_x ?? td.x ?? s.telemetry?.live_x ?? 0,
+                live_y: td.live_y ?? td.cmd_y ?? td.y ?? s.telemetry?.live_y ?? 0,
+                live_z: td.live_z ?? td.cmd_z ?? td.z ?? s.telemetry?.live_z ?? 0,
+                extTemp: td.ext_temp ?? td.extTemp ?? 0,
+                bedTemp: td.bed_temp ?? td.bedTemp ?? 0,
+                extTarget: td.ext_target ?? td.extTarget ?? 0,
+                bedTarget: td.bed_target ?? td.bedTarget ?? 0,
+                fan_speed: td.fan_speed ?? s.telemetry?.fan_speed ?? 0,
+                state: td.print_state ?? td.state ?? "unknown",
+                online: td.online ?? true,
+                klippy_state: td.klippy_state || "ready",
+                klippy_connected: td.klippy_connected !== false,
+                state_message: td.state_message || "",
+                device_temperatures: td.device_temperatures || s.telemetry?.device_temperatures || {},
+                fault: td.print_state === "error" || td.klippy_state === "shutdown" || td.klippy_state === "error",
+              },
+              ...(td.vibration ? { vibration: td.vibration } : {}),
+            }));
+          }
+        } catch { /* fallback failed */ }
       }
 
       await Promise.all([
@@ -575,6 +709,7 @@ export const useStore = create((set, get) => ({
       emergency_stop: "emergency_stop",
       restart: "restart",
       firmware_restart: "firmware_restart",
+      server_restart: "server_restart",
       reboot: "machine/reboot",
       shutdown: "machine/shutdown",
     };
@@ -725,12 +860,16 @@ export const useStore = create((set, get) => ({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(profile),
       });
-      const data = await res.json();
-      if (!res.ok) return { error: data.error || `HTTP ${res.status}` };
+      const text = await res.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch { data = { error: text.slice(0, 100) }; }
+      if (!res.ok) {
+        return { error: data.error || `HTTP ${res.status}` };
+      }
       set({ ledProfile: data });
       return { ok: true };
     } catch (e) {
-      return { error: e.toString() };
+      return { error: e.message || String(e) };
     }
   },
 
@@ -741,11 +880,15 @@ export const useStore = create((set, get) => ({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ led_name: ledName, color: hexColor }),
       });
-      const data = await res.json();
-      if (!res.ok) return { error: data.error || `HTTP ${res.status}` };
+      const text = await res.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch { data = { error: text.slice(0, 100) }; }
+      if (!res.ok) {
+        return { error: data.error || `HTTP ${res.status}` };
+      }
       return { ok: true };
     } catch (e) {
-      return { error: e.toString() };
+      return { error: e.message || String(e) };
     }
   },
 
@@ -756,22 +899,30 @@ export const useStore = create((set, get) => ({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ state }),
       });
-      const data = await res.json();
-      if (!res.ok) return { error: data.error || `HTTP ${res.status}` };
+      const text = await res.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch { data = { error: text.slice(0, 100) }; }
+      if (!res.ok) {
+        return { error: data.error || `HTTP ${res.status}` };
+      }
       return { ok: true, color: data.color };
     } catch (e) {
-      return { error: e.toString() };
+      return { error: e.message || String(e) };
     }
   },
 
   turnLedsOff: async () => {
     try {
       const res = await fetch(`${API}/api/v1/printer/leds/off`, { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) return { error: data.error || `HTTP ${res.status}` };
+      const text = await res.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch { data = { error: text.slice(0, 100) }; }
+      if (!res.ok) {
+        return { error: data.error || `HTTP ${res.status}` };
+      }
       return { ok: true };
     } catch (e) {
-      return { error: e.toString() };
+      return { error: e.message || String(e) };
     }
   },
 
@@ -898,6 +1049,48 @@ export const useStore = create((set, get) => ({
         body: JSON.stringify({ filename: path }),
       });
       return res.json();
+    } catch (e) {
+      return { error: e.toString() };
+    }
+  },
+
+  createDirectory: async (path) => {
+    try {
+      const res = await fetch(`${API}/api/v1/printer/files/directory`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      await get().fetchGcodeFiles();
+      return await res.json();
+    } catch (e) {
+      return { error: e.toString() };
+    }
+  },
+
+  deleteDirectory: async (path) => {
+    try {
+      const res = await fetch(`${API}/api/v1/printer/files/directory`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      await get().fetchGcodeFiles();
+      return await res.json();
+    } catch (e) {
+      return { error: e.toString() };
+    }
+  },
+
+  moveFile: async (source, dest) => {
+    try {
+      const res = await fetch(`${API}/api/v1/printer/files/move`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source, dest }),
+      });
+      await get().fetchGcodeFiles();
+      return await res.json();
     } catch (e) {
       return { error: e.toString() };
     }
@@ -1123,6 +1316,19 @@ export const useStore = create((set, get) => ({
 
   sendGcode: async (cmd) => {
     try {
+      if (cmd && typeof cmd === "string" && cmd.trim()) {
+        try {
+          const raw = cmd.trim();
+          let history = JSON.parse(localStorage.getItem("indus3d_cmd_history") || "[]");
+          if (!Array.isArray(history)) history = [];
+          history = history.filter((h) => h !== raw);
+          history.push(raw);
+          if (history.length > 50) history = history.slice(-50);
+          localStorage.setItem("indus3d_cmd_history", JSON.stringify(history));
+        } catch {
+          // Command history is a convenience feature and must not block G-code.
+        }
+      }
       const res = await fetch(`${API}/api/v1/control/execute`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
@@ -1139,14 +1345,149 @@ export const useStore = create((set, get) => ({
     } catch (e) { return { error: e.toString() }; }
   },
 
+  homeAxis: async (axis) => {
+    const cmd = axis ? `G28 ${axis.toUpperCase()}` : "G28";
+    return get().sendGcode(cmd);
+  },
+
+  motorsOff: async () => {
+    return get().sendGcode("M84");
+  },
+
+  extrudeFilament: async (amount, feedrate = 300) => {
+    return get().sendGcode(`M83\nG1 E${amount} F${feedrate}\nM82`);
+  },
+
+  setBabystep: async (offset) => {
+    return get().sendGcode(`SET_GCODE_OFFSET Z_ADJUST=${offset} MOVE=1`);
+  },
+
+  saveBabystep: async () => {
+    return get().sendGcode("Z_OFFSET_APPLY_PROBE");
+  },
+
+  setSpeedFactor: async (pct) => {
+    const num = Math.max(10, Math.min(300, Math.round(Number(pct) || 100)));
+    set((s) => ({ telemetry: { ...s.telemetry, speed_factor: num } }));
+    return get().sendGcode(`M220 S${num}`);
+  },
+
+  setFlowFactor: async (pct) => {
+    const num = Math.max(50, Math.min(200, Math.round(Number(pct) || 100)));
+    set((s) => ({ telemetry: { ...s.telemetry, flow_factor: num } }));
+    return get().sendGcode(`M221 S${num}`);
+  },
+
+  setFanSpeed: async (pct) => {
+    const num = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+    return get().sendGcode(num > 0 ? `M106 S${Math.round(num * 2.55)}` : "M107");
+  },
+
   jogToolhead: async (delta, feedrate = 3000) => {
     try {
+      const validFeed = Number(feedrate) > 0 ? Number(feedrate) : 3000;
+      const current = get().telemetry || {};
+      const curX = current.cmd_x ?? current.x ?? current.live_x ?? 0;
+      const curY = current.cmd_y ?? current.y ?? current.live_y ?? 0;
+      const curZ = current.cmd_z ?? current.z ?? current.live_z ?? 0;
+      const targetX = delta.x !== undefined ? curX + Number(delta.x) : curX;
+      const targetY = delta.y !== undefined ? curY + Number(delta.y) : curY;
+      const targetZ = delta.z !== undefined ? curZ + Number(delta.z) : curZ;
+
+      // Optimistic instant visual update: toolhead moves immediately with zero latency
+      set((s) => ({
+        telemetry: {
+          ...s.telemetry,
+          cmd_x: targetX,
+          cmd_y: targetY,
+          cmd_z: targetZ,
+          x: targetX,
+          y: targetY,
+          z: targetZ,
+          velocity: validFeed / 60,
+        }
+      }));
+
       const res = await fetch(`${API}/api/v1/control/jog`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...delta, feedrate }),
+        body: JSON.stringify({ ...delta, feedrate: validFeed }),
       });
       return await res.json();
     } catch (e) { return { error: e.toString() }; }
+  },
+
+  moveToolhead: async (coords, feedrate = 3000) => {
+    try {
+      const validFeed = Number(feedrate) > 0 ? Number(feedrate) : 3000;
+      const current = get().telemetry || {};
+      const targetX = coords.x !== undefined ? Number(coords.x) : (current.cmd_x ?? current.x ?? 0);
+      const targetY = coords.y !== undefined ? Number(coords.y) : (current.cmd_y ?? current.y ?? 0);
+      const targetZ = coords.z !== undefined ? Number(coords.z) : (current.cmd_z ?? current.z ?? 0);
+
+      // Optimistic instant visual update: toolhead moves immediately with zero latency
+      set((s) => ({
+        telemetry: {
+          ...s.telemetry,
+          cmd_x: targetX,
+          cmd_y: targetY,
+          cmd_z: targetZ,
+          x: targetX,
+          y: targetY,
+          z: targetZ,
+          velocity: validFeed / 60,
+        }
+      }));
+
+      const res = await fetch(`${API}/api/v1/control/move`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...coords, feedrate: validFeed }),
+      });
+      return await res.json();
+    } catch (e) { return { error: e.toString() }; }
+  },
+
+  setTemperature: async (heater, target) => {
+    try {
+      const numTarget = Math.max(0, Number(target) || 0);
+      set((s) => ({
+        telemetry: {
+          ...s.telemetry,
+          ...(heater === "extruder" || heater === "nozzle"
+            ? { extTarget: numTarget }
+            : { bedTarget: numTarget }),
+        },
+      }));
+      const res = await fetch(`${API}/api/v1/printer/temperature`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ heater, target: numTarget }),
+      });
+      return await res.json();
+    } catch (e) {
+      return { error: e.toString() };
+    }
+  },
+
+  setPreheatPreset: async (extruder, bed) => {
+    try {
+      const extNum = Math.max(0, Number(extruder) || 0);
+      const bedNum = Math.max(0, Number(bed) || 0);
+      set((s) => ({
+        telemetry: {
+          ...s.telemetry,
+          extTarget: extNum,
+          bedTarget: bedNum,
+        },
+      }));
+      const res = await fetch(`${API}/api/v1/printer/temperature`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ extruder: extNum, bed: bedNum }),
+      });
+      return await res.json();
+    } catch (e) {
+      return { error: e.toString() };
+    }
   },
 
   calibrationStatus: { ready: false, simulated: false, print_state: "offline", defaults: {} },
@@ -1157,39 +1498,11 @@ export const useStore = create((set, get) => ({
     } catch { /* modal reports an unavailable backend */ }
   },
 
-  runCalibrationStep: async (step, options = {}) => {
-    try {
-      const res = await fetch(`${API}/api/v1/calibration/run`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ step, confirmed: true, ...options }),
-      });
-      return await res.json();
-    } catch (e) { return { error: e.toString() }; }
-  },
-
   exportAnnotatedGcode: async () => {
     try {
       const url = `${API}/api/v1/export/annotated-gcode`;
       window.open(url, '_blank');
     } catch { /* silent */ }
-  },
-
-  uploadPATest: async (options = {}) => {
-    try {
-      const res = await fetch(`${API}/api/v1/calibration/pa-test`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(options),
-      });
-      return await res.json();
-    } catch (e) { return { error: e.toString() }; }
-  },
-
-  uploadFlowSample: async () => {
-    try {
-      const res = await fetch(`${API}/api/v1/calibration/flow-sample`, { method: "POST" });
-      return await res.json();
-    } catch (e) { return { error: e.toString() }; }
   },
 
   // ── Replay ────────────────────────────────────────────────────────────────
@@ -1241,14 +1554,67 @@ export const useStore = create((set, get) => ({
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
   wsRef: null,
+  lastWsMsgTime: 0,
 
   initWebSocket: () => {
     let reconnectTimer = null;
+    let watchdogTimer = null;
+
     const connect = () => {
+      if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
       const ws = new WebSocket(WS_URL);
 
       ws.onopen = () => {
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        set({ lastWsMsgTime: Date.now() });
+
+        // Health Watchdog: polls HTTP fallback if WebSocket goes silent >2s,
+        // and force-reconnects if silent >6s
+        watchdogTimer = setInterval(async () => {
+          const last = get().lastWsMsgTime || 0;
+          const now = Date.now();
+          if (now - last > 2000) {
+            try {
+              const tr = await fetch(`${API}/api/v1/twin/state`);
+              if (tr.ok) {
+                const td = await tr.json();
+                set((s) => ({
+                  telemetry: {
+                    ...s.telemetry,
+                    x: td.cmd_x ?? td.x ?? s.telemetry?.x ?? 0,
+                    y: td.cmd_y ?? td.y ?? s.telemetry?.y ?? 0,
+                    z: td.cmd_z ?? td.z ?? s.telemetry?.z ?? 0,
+                    cmd_x: td.cmd_x ?? td.x ?? 0,
+                    cmd_y: td.cmd_y ?? td.y ?? 0,
+                    cmd_z: td.cmd_z ?? td.z ?? 0,
+                    live_x: td.live_x ?? td.cmd_x ?? td.x ?? s.telemetry?.live_x ?? 0,
+                    live_y: td.live_y ?? td.cmd_y ?? td.y ?? s.telemetry?.live_y ?? 0,
+                    live_z: td.live_z ?? td.cmd_z ?? td.z ?? s.telemetry?.live_z ?? 0,
+                    extTemp: td.ext_temp ?? td.extTemp ?? 0,
+                    bedTemp: td.bed_temp ?? td.bedTemp ?? 0,
+                    extTarget: td.ext_target ?? td.extTarget ?? 0,
+                    bedTarget: td.bed_target ?? td.bedTarget ?? 0,
+                    fan_speed: td.fan_speed ?? s.telemetry?.fan_speed ?? 0,
+                    state: td.print_state ?? td.state ?? "unknown",
+                    online: td.online ?? true,
+                    klippy_state: td.klippy_state || "ready",
+                    klippy_connected: td.klippy_connected !== false,
+                    state_message: td.state_message || "",
+                    device_temperatures: td.device_temperatures || s.telemetry?.device_temperatures || {},
+                    fault: td.print_state === "error" || td.klippy_state === "shutdown" || td.klippy_state === "error",
+                  },
+                  ...(td.vibration ? { vibration: td.vibration } : {}),
+                }));
+              }
+            } catch {
+              // A malformed telemetry frame is ignored; the next frame replaces it.
+            }
+          }
+          if (now - last > 6000 && ws.readyState === WebSocket.OPEN) {
+            console.warn("[Indus3D] WebSocket stream stalled (>6s silent). Force reconnecting...");
+            try { ws.close(); } catch { /* Socket may already be closed. */ }
+          }
+        }, 2000);
       };
 
       ws.onmessage = (event) => {
@@ -1280,6 +1646,12 @@ export const useStore = create((set, get) => ({
           }
 
           const now = Date.now();
+          const devTemps = d.device_temperatures || get().telemetry?.device_temperatures || {};
+          const devTempsFlat = {};
+          Object.entries(devTemps).forEach(([k, v]) => {
+            devTempsFlat[k] = Number(v?.temperature ?? v) || 0;
+          });
+
           const history = get().temperatureHistory;
           const lastPoint = history[history.length - 1];
           const nextHistory = !lastPoint || now - lastPoint.ts >= 1000
@@ -1288,30 +1660,45 @@ export const useStore = create((set, get) => ({
                 extruder: Number(d.ext_temp) || 0,
                 bed: Number(d.bed_temp) || 0,
                 chamber: Number(d.environment?.temperature ?? get().environment.temperature) || 0,
+                ...devTempsFlat,
               }].slice(-180)
             : history;
 
           set({
+            lastWsMsgTime: now,
             telemetry: {
-              x:               d.cmd_x         ?? 0,
-              y:               d.cmd_y         ?? 0,
-              z:               d.cmd_z         ?? 0,
-              live_x:          d.live_x        ?? 0,
-              live_y:          d.live_y        ?? 0,
-              live_z:          d.live_z        ?? 0,
-              extTemp:         d.ext_temp      ?? 0,
-              bedTemp:         d.bed_temp      ?? 0,
-              extTarget:       d.ext_target    ?? 0,
-              bedTarget:       d.bed_target    ?? 0,
-              state:           d.print_state   ?? "unknown",
+              x:               d.cmd_x         ?? d.x         ?? 0,
+              y:               d.cmd_y         ?? d.y         ?? 0,
+              z:               d.cmd_z         ?? d.z         ?? 0,
+              cmd_x:           d.cmd_x         ?? d.x         ?? 0,
+              cmd_y:           d.cmd_y         ?? d.y         ?? 0,
+              cmd_z:           d.cmd_z         ?? d.z         ?? 0,
+              live_x:          d.live_x        ?? d.cmd_x     ?? d.x ?? 0,
+              live_y:          d.live_y        ?? d.cmd_y     ?? d.y ?? 0,
+              live_z:          d.live_z        ?? d.cmd_z     ?? d.z ?? 0,
+              velocity:        d.velocity      ?? d.derived_velocity_mm_s ?? 0,
+              timestamp:       d.timestamp     ?? Date.now(),
+              homed_axes:      d.homed_axes    ?? "",
+              is_homed:        d.is_homed      ?? false,
+              extTemp:         d.ext_temp      ?? d.extTemp   ?? 0,
+              bedTemp:         d.bed_temp      ?? d.bedTemp   ?? 0,
+              extTarget:       d.ext_target    ?? d.extTarget ?? 0,
+              bedTarget:       d.bed_target    ?? d.bedTarget ?? 0,
+              state:           d.print_state   ?? d.state     ?? "unknown",
               filename:        d.filename      ?? "",
               file_position:   d.file_position ?? 0,
-              fault:           d.print_state   === "error",
+              fault:           d.print_state === "error" || d.klippy_state === "shutdown" || d.klippy_state === "error",
               progress:        d.progress      ?? 0,
               print_duration:  d.print_duration ?? 0,
               time_remaining:  d.time_remaining ?? 0,
               speed_factor:    d.speed_factor  ?? 100,
               flow_factor:     d.flow_factor   ?? 100,
+              fan_speed:       d.fan_speed     ?? get().telemetry?.fan_speed ?? 0,
+              online:          d.online        ?? true,
+              klippy_state:    d.klippy_state  ?? "ready",
+              klippy_connected: d.klippy_connected ?? true,
+              state_message:   d.state_message ?? "",
+              device_temperatures: devTemps,
             },
             kinematics:   d.kinematics ?? {},
             thermals:     d.thermals   ?? {},
@@ -1329,12 +1716,24 @@ export const useStore = create((set, get) => ({
             ...(d.maintenance_hints !== undefined
               ? { maintenanceHints: d.maintenance_hints } : {}),
           });
-        } catch { /* bad frame */ }
+        } catch (err) {
+          console.error("[Indus3D] WebSocket onmessage processing error:", err);
+        }
       };
 
       ws.onerror = () => ws.close();
       ws.onclose = async () => {
-        set((s) => ({ telemetry: { ...s.telemetry, fault: true } }));
+        if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+        set((s) => ({
+          telemetry: {
+            ...s.telemetry,
+            fault: true,
+            online: false,
+            klippy_state: "offline",
+            klippy_connected: false,
+            state_message: "Backend or WebSocket connection lost. Reconnecting...",
+          }
+        }));
         const found = await huntForApiPort();
         reconnectTimer = setTimeout(connect, found ? 100 : 2000);
       };

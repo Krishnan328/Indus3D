@@ -1,19 +1,31 @@
-# Optional — only needed if you run backend/edge/ (camera-based print-
-# failure detection: watchdog.py needs opencv-python + numpy only;
-# inspector.py additionally needs ultralytics once you've trained a model —
-# see edge/harvester.py). Reports to the main backend's /api/v1/edge/*
-# routes; enable it there too (Settings > Vision Inspector, or
-# indus_overrides.cfg's edge_inspection_* keys) or detections are recorded
-# but never acted on.
+# requirements-vision.txt
+# ─────────────────────────────────────────────────────────────────────────────
+# Vision pipeline dependencies for the companion device (NOT the main Pi/backend).
+# Install in a dedicated venv: python3 -m venv .venv-vision && pip install -r this
 #
-# Do not install this on the same 1GB Pi / Creality mainboard running the
-# digital twin + API. ultralytics pulls in PyTorch, commonly 500MB-800MB+
-# on disk and a meaningful RAM footprint the moment it's actually imported
-# — budget a separate/companion device for vision, and have it talk to
-# the twin's API over the network instead of sharing a process with it.
-#
-# pip install -r requirements.txt -r requirements-vision.txt   (companion device only)
+# Device-Tier legend:
+#   Tier 0 (all)     — OpenCV contour matching — opencv-python, numpy, requests
+#   Tier 1 (Pi4B+)   — CAXTON ONNX             — + onnxruntime
+#   Tier 2 (Pi5+)    — ProtoNet ShuffleNetV2    — + torch (CPU) + torchvision
+#   Tier 3 (Desktop) — YOLOv8                   — + ultralytics
 
-opencv-python>=4.9.0
-numpy>=1.26.0
-ultralytics>=8.1.0
+# ── Core (required for all tiers) ─────────────────────────────────────────────
+opencv-python>=4.8,<5.0
+numpy>=1.24,<2.0
+requests>=2.28
+
+# ── Tier 1: CAXTON ONNX Runtime ───────────────────────────────────────────────
+# CPU-only ONNX — ~7 MB, no PyTorch needed. Fine for Pi 4B.
+onnxruntime>=1.16
+
+# ── Tier 2: ProtoNet ShuffleNetV2 (PyTorch CPU-only) ─────────────────────────
+# Install CPU-only torch to keep pip size manageable on Pi 5.
+# Uncomment on Pi 5 / Desktop:
+# torch>=2.1 --index-url https://download.pytorch.org/whl/cpu
+# torchvision>=0.16 --index-url https://download.pytorch.org/whl/cpu
+
+# ── Tier 3: YOLOv8 (Desktop / Pi 5 with USB accel) ───────────────────────────
+# ultralytics pulls in PyTorch automatically — only install on x86 Desktop
+# or Pi 5 with adequate RAM (4 GB+).
+# Uncomment on Desktop:
+# ultralytics>=8.0

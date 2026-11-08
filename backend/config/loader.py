@@ -13,16 +13,20 @@ import os, json, tempfile, requests
 from config.settings import settings
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_OVERRIDES_PATH = os.path.join(_HERE, "indus_overrides.cfg")
+_OVERRIDES_PATH = os.environ.get("INDUS3D_CONFIG_PATH", os.path.join(_HERE, "indus_overrides.cfg"))
 _FALLBACK_JSON  = os.path.join(_HERE, "printer_profile.json")
 
 _LOCAL_CFG_CANDIDATES = [
+    os.environ.get("KLIPPER_CONFIG_PATH", ""),
     os.path.expanduser("~/printer_data/config/printer.cfg"),
     os.path.expanduser("~/klipper_config/printer.cfg"),
+    "/etc/printer.cfg",
+    "/var/lib/klipper/printer.cfg",
     "/home/pi/printer_data/config/printer.cfg",
     "/home/pi/klipper_config/printer.cfg",
     os.path.join(_HERE, "printer.cfg"),
 ]
+_LOCAL_CFG_CANDIDATES = [c for c in _LOCAL_CFG_CANDIDATES if c]
 
 _cache: dict = {}
 
@@ -68,7 +72,12 @@ def _merge_bed_safety(cache: dict) -> None:
         from digital_twin.bed_safety import bed_safety
         if "bed" not in cache:
             cache["bed"] = {}
-        cache["bed"].update(bed_safety.to_dict())
+        # Only overlay custom bed geometry if a user explicitly uploaded a custom STL or imported an OrcaSlicer profile
+        if bed_safety.has_custom_model or (bed_safety.source_name and bed_safety.source_name not in ("default", "printer.cfg")):
+            cache["bed"].update(bed_safety.to_dict())
+        else:
+            bed_safety.reset_to_default(cache.get("bed"))
+            cache["bed"].update(bed_safety.to_dict())
     except Exception as e:
         logging.warning(f"Could not merge bed_safety into profile: {e}")
 
@@ -99,7 +108,7 @@ def reload():
 
     if cfg_text:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".cfg",
-                                         delete=False, dir=_HERE) as tmp:
+                                         delete=False) as tmp:
             tmp.write(cfg_text); tmp_path = tmp.name
         try:
             _cache = build_profile(tmp_path, _OVERRIDES_PATH)
@@ -149,6 +158,16 @@ def get_moonraker_url():
     # out of indus_overrides.cfg — see CLAUDE_CONTEXT.md for why that was
     # a live bug and not just duplication.
     return settings.moonraker_url
+
+
+def get_overrides_path() -> str:
+    """Return the active writable override file path.
+
+    NixOS installs the application in the immutable Nix store and supplies
+    ``INDUS3D_CONFIG_PATH`` for persistent calibration data.  Consumers must
+    use this accessor rather than reconstructing a path relative to source.
+    """
+    return _OVERRIDES_PATH
 
 
 # Load on import

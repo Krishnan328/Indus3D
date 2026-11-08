@@ -8,13 +8,14 @@ import { HeatersPanel } from "./toolhead/HeatersPanel";
 import { TuningPanel } from "./toolhead/TuningPanel";
 import { ZOffsetPanel } from "./toolhead/ZOffsetPanel";
 import { LevelingPanel } from "./toolhead/LevelingPanel";
+import { GoToPanel } from "./toolhead/GoToPanel";
 import { isPrinting, reasonDisabled } from "./slices/toolheadLogic";
 
 // Toolhead card: jog and home (bars / cross / circle), extruder, heaters + fans + outputs, speed / flow /
 // pressure advance / retraction, Z babystep, leveling. Klipper status is polled only while this card is
 // mounted. Everything the printer cannot do is hidden; things that make no sense during a print are
 // disabled with the reason shown.
-const TABS = [["move", "Move"], ["extruder", "Extruder"], ["heat", "Heat"], ["tune", "Tune"], ["z", "Z offset"], ["level", "Level"]];
+const TABS = [["move", "Move"], ["extruder", "Extruder"], ["heat", "Heat"], ["tune", "Tune"], ["z", "Z offset"], ["level", "Level"], ["goto", "Go to"]];
 
 export function ToolheadControls() {
   const tState = useStore((s) => s.telemetry?.state);
@@ -105,6 +106,7 @@ export function ToolheadControls() {
         {tab === "tune" && <TuningPanel status={panelProps.status} capabilities={panelProps.capabilities} connected={connected} />}
         {tab === "z" && <ZOffsetPanel {...panelProps} />}
         {tab === "level" && <LevelingPanel {...panelProps} />}
+        {tab === "goto" && <GoToPanel btn={panelProps.btn} connected={connected} printing={printing} x={x} y={y} z={z} />}
       </div>
       {toolheadStatus && (
         <div className={`mt-2 text-[10px] text-center font-mono ${toolheadStatus.ok ? "opacity-70" : "text-red-400"}`} role="status">{toolheadStatus.message}</div>

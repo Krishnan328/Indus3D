@@ -275,3 +275,17 @@ def test_action_route_requires_confirmation():
     assert c.post("/api/v1/plugins/filament_sensor/action", json={"action": "tare_empty"}).status_code == 412
     assert c.post("/api/v1/plugins/filament_sensor/action", json={"action": "nope", "confirmed": True}).status_code == 400
     assert c.get("/api/v1/plugins/filament_sensor").get_json()["spool_sync"]["enabled"] in (True, False)
+
+
+def test_core_bed_sensor_client_sends_the_guard_header_the_hub_daemon_requires():
+    from services.bed_sensor import BedSensorClient
+    sent = {}
+
+    class S:
+        def post(self, url, json=None, headers=None, timeout=None):
+            sent.update(url=url, headers=headers)
+            return type("R", (), {"status_code": 200})()
+    c = BedSensorClient(url="http://127.0.0.1:7127/telemetry")
+    c._session = S()
+    assert c.reset_crash() is True
+    assert sent["url"] == "http://127.0.0.1:7127/reset_crash" and sent["headers"] == {"X-Indus3D-Action": "1"}

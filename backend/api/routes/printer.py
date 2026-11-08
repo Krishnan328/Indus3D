@@ -35,6 +35,7 @@ Endpoints:
 """
 
 import logging
+import time
 import requests
 from flask import Blueprint, jsonify, request, Response, stream_with_context
 from config.settings import settings
@@ -167,13 +168,80 @@ def get_gcode_file(filename: str):
 @printer_bp.route("/files/list", methods=["GET"])
 def list_gcode_files():
     try:
+        subpath = request.args.get("path", "").strip()
+        params = {"root": "gcodes"}
+        if subpath:
+            params["path"] = subpath
         res = requests.get(
-            _mr("/server/files/list?root=gcodes"),
+            _mr("/server/files/list"),
+            params=params,
             timeout=_TIMEOUT_SHORT,
         )
         return (res.text, res.status_code, {"Content-Type": "application/json"})
     except Exception as e:
         return _forward_error(e, "file list")
+
+
+@printer_bp.route("/files/directory", methods=["POST"])
+def create_directory():
+    data = request.get_json(silent=True) or {}
+    dir_path = data.get("path") or request.args.get("path", "")
+    dir_path = str(dir_path).strip().strip("/")
+    if not dir_path or ".." in dir_path:
+        return jsonify({"error": "Valid directory path required"}), 400
+    if not (dir_path.startswith("gcodes/") or dir_path.startswith("config/") or dir_path in ("gcodes", "config")):
+        dir_path = f"gcodes/{dir_path}"
+    try:
+        res = requests.post(
+            _mr("/server/files/directory"),
+            params={"path": dir_path},
+            timeout=_TIMEOUT_SHORT,
+        )
+        return (res.text, res.status_code, {"Content-Type": "application/json"})
+    except Exception as e:
+        return _forward_error(e, f"create directory {dir_path}")
+
+
+@printer_bp.route("/files/directory", methods=["DELETE"])
+def delete_directory():
+    data = request.get_json(silent=True) or {}
+    dir_path = data.get("path") or request.args.get("path", "")
+    dir_path = str(dir_path).strip().strip("/")
+    if not dir_path or ".." in dir_path:
+        return jsonify({"error": "Valid directory path required"}), 400
+    if not (dir_path.startswith("gcodes/") or dir_path.startswith("config/") or dir_path in ("gcodes", "config")):
+        dir_path = f"gcodes/{dir_path}"
+    try:
+        res = requests.delete(
+            _mr("/server/files/directory"),
+            params={"path": dir_path},
+            timeout=_TIMEOUT_SHORT,
+        )
+        return (res.text, res.status_code, {"Content-Type": "application/json"})
+    except Exception as e:
+        return _forward_error(e, f"delete directory {dir_path}")
+
+
+@printer_bp.route("/files/move", methods=["POST"])
+def move_file():
+    data = request.get_json(silent=True) or {}
+    source = data.get("source", "").strip().strip("/")
+    dest = data.get("dest", "").strip().strip("/")
+    if not source or not dest or ".." in source or ".." in dest:
+        return jsonify({"error": "Valid source and dest required"}), 400
+    if not (source.startswith("gcodes/") or source.startswith("config/")):
+        source = f"gcodes/{source}"
+    if not (dest.startswith("gcodes/") or dest.startswith("config/")):
+        dest = f"gcodes/{dest}"
+    try:
+        res = requests.post(
+            _mr("/server/files/move"),
+            json={"source": source, "dest": dest},
+            timeout=_TIMEOUT_SHORT,
+        )
+        return (res.text, res.status_code, {"Content-Type": "application/json"})
+    except Exception as e:
+        return _forward_error(e, f"move {source} to {dest}")
 
 
 @printer_bp.route("/files/metadata", methods=["GET"])
@@ -213,6 +281,7 @@ def delete_gcode_file(filename: str):
 # ── Config files ──────────────────────────────────────────────────────────────
 
 @printer_bp.route("/config/list", methods=["GET"])
+@printer_bp.route("/files/config", methods=["GET"])
 def list_config_files():
     try:
         res = requests.get(
@@ -225,6 +294,7 @@ def list_config_files():
 
 
 @printer_bp.route("/config/<path:filename>", methods=["GET"])
+@printer_bp.route("/files/config/<path:filename>", methods=["GET"])
 def get_config_file(filename: str):
     if ".." in filename.split("/"):
         return jsonify({"error": "invalid filename"}), 400
@@ -240,6 +310,7 @@ def get_config_file(filename: str):
 
 
 @printer_bp.route("/config/<path:filename>", methods=["POST"])
+@printer_bp.route("/files/config/<path:filename>", methods=["POST"])
 def save_config_file(filename: str):
     import difflib, time, json
     from db.models import get_connection
@@ -304,45 +375,72 @@ def save_config_file(filename: str):
 
 # Safe command prefixes — anything not starting with these is rejected
 _SAFE_PREFIXES = {
-    # Motion
+    # Motion & Positioning
     "G0", "G1", "G2", "G3", "G4", "G28", "G29", "G90", "G91", "G92",
+    # Extruder mode (absolute vs relative)
+    "M82", "M83",
     # Firmware retraction (G10=retract, G11=recover)
     "G10", "G11",
     # Unit / extrusion-mode selection (harmless, used by sliced preambles)
     "G21", "M82", "M83",
-    # Temperature
+    # Temperature & fans
     "M104", "M105", "M106", "M107", "M109",
     "M140", "M190",
-    # Info / wait / misc
-    "M114", "M115", "M117", "M300", "M400", "M503",
-    # Flow & speed overrides (QC loop uses these)
+    "SET_HEATER_TEMPERATURE", "TURN_OFF_HEATERS",
+    # Info / wait / status / misc
+    "M114", "M115", "M117", "M119", "M300", "M400", "M503", "STATUS", "HELP",
+    # Flow & speed overrides
     "M220", "M221",
     # Emergency stop (safety critical — must always be allowed)
     "M112",
-    # Filament change / pause
-    "M600", "M0", "M1",
+    # Filament change / pause / resume / cancel
+    "M600", "M0", "M1", "PAUSE", "RESUME", "CANCEL_PRINT", "CLEAR_PAUSE",
+    "SET_PAUSE_NEXT_LAYER", "SET_PAUSE_AT_LAYER",
     # Motors off
     "M84", "M18",
-    # Klipper extended — QC loop sends these every 5 s during autopilot
+    # Klipper extended — tuning & offsets
     "SET_PRESSURE_ADVANCE",
     "SET_VELOCITY_LIMIT",
     "SET_RETRACTION",
     "SET_GCODE_OFFSET",
     "SET_INPUT_SHAPER",
-    # Bed mesh
-    "BED_MESH_CALIBRATE", "BED_MESH_CLEAR",
+    "Z_OFFSET_APPLY_PROBE",
+    "Z_OFFSET_APPLY_ENDSTOP",
+    # Bed mesh & tramming & probing
+    "BED_MESH_CALIBRATE", "BED_MESH_CLEAR", "BED_MESH_PROFILE", "BED_MESH_OUTPUT", "BED_MESH_MAP",
+    "SCREWS_TILT_CALCULATE", "BED_SCREWS_ADJUST", "QUAD_GANTRY_LEVEL", "Z_TILT_ADJUST",
+    "PROBE", "PROBE_ACCURACY", "PROBE_CALIBRATE", "PROBE_EDDY_CURRENT_CALIBRATE_AUTO",
+    "QUERY_ENDSTOPS", "QUERY_PROBE", "MANUAL_PROBE", "Z_ENDSTOP_CALIBRATE", "TESTZ", "ABORT", "ACCEPT",
     # Calibration
     "SHAPER_CALIBRATE", "ADXL_TEST", "PID_CALIBRATE",
-    # Exclude object (used by exclude-object workflow)
+    # Exclude object
     "EXCLUDE_OBJECT",
     # Save / restart
     "FIRMWARE_RESTART", "RESTART", "SAVE_CONFIG",
     # Tool change
-    "T0", "T1", "T2", "T3",
+    "T0", "T1", "T2", "T3", "T4",
+    # Leveling / probing procedures and the manual-probe dialog commands, status queries
+    "Z_TILT_ADJUST", "QUAD_GANTRY_LEVEL", "BED_SCREWS_ADJUST", "SCREWS_TILT_CALCULATE",
+    "PROBE_CALIBRATE", "TESTZ", "ACCEPT", "ABORT", "QUERY_ENDSTOPS", "M119",
 }
 
-def _is_safe_gcode(cmd: str) -> bool:
+_SHELL_CHARS = ("|", "&", "$", "`", "<", ">", "\\")
+
+
+def known_macros() -> set:
+    """Upper-cased names of the gcode_macro objects Klipper really has (empty if Moonraker is unreachable)."""
+    try:
+        from api import moonraker_util as mu
+        return {m.upper() for m in mu.macro_names()}
+    except Exception:  # noqa: BLE001
+        return set()
+
+def _is_safe_gcode(cmd: str, macros=None) -> bool:
     """True only if EVERY line of the script starts with an allowed command.
+
+    ``macros`` is the set of user macro names (upper case) that Klipper reports; a line may also start with
+    one of those. Any other command (FORCE_MOVE, SAVE_CONFIG, RUN_SHELL_COMMAND, ...) is refused, so the
+    console can run user macros without becoming a way to run arbitrary Klipper commands.
 
     Moonraker/Klipper execute all lines of a script, so checking just the
     beginning of the string would let "G90\\n<anything>" through. Each command
@@ -351,6 +449,9 @@ def _is_safe_gcode(cmd: str) -> bool:
     """
     if not isinstance(cmd, str) or "\x00" in cmd:
         return False
+    if any(c in cmd for c in _SHELL_CHARS):          # never meaningful for Klipper; refuse as defence in depth
+        return False
+    macros = macros or ()
     lines = [ln.strip() for ln in cmd.replace("\r", "\n").split("\n")]
     lines = [ln for ln in lines if ln and not ln.startswith(";")]
     if not lines:
@@ -359,7 +460,7 @@ def _is_safe_gcode(cmd: str) -> bool:
         token = line.split(None, 1)[0].upper()
         # Allow Klipper-style "M104.5"-free tokens and "G1X10" is rejected on
         # purpose: a token must be exactly a listed command.
-        if token not in _SAFE_PREFIXES:
+        if token not in _SAFE_PREFIXES and token not in macros:
             return False
     return True
 
@@ -371,13 +472,93 @@ def _printer_is_busy() -> bool:
     return state in ("printing", "paused")
 
 
+@printer_bp.route("/temperature", methods=["POST"])
+def set_temperature():
+    """Set target temperature for extruder (nozzle) or heater_bed.
+    Payload options:
+      {"heater": "extruder"|"heater_bed"|"bed", "target": float}
+      {"extruder": float, "bed": float}
+    """
+    data = request.json or {}
+    import workers
+    w = workers._active_worker
+
+    # Multi-heater format: {"extruder": 210, "bed": 60}
+    if "extruder" in data or "bed" in data:
+        results = {}
+        if "extruder" in data:
+            try:
+                t_ext = float(data["extruder"])
+                t_ext = max(0.0, min(350.0, t_ext))
+                if w and hasattr(w, "set_temperature"):
+                    w.set_temperature("extruder", t_ext)
+                elif w and hasattr(w, "inject_gcode"):
+                    w.inject_gcode(f"M104 S{t_ext:.1f}")
+                else:
+                    requests.post(_mr("/printer/gcode/script"), params={"script": f"M104 S{t_ext:.1f}"}, timeout=_TIMEOUT_SHORT)
+                results["extruder"] = t_ext
+            except Exception as e:
+                return jsonify({"error": f"Invalid extruder temperature: {e}"}), 400
+
+        if "bed" in data:
+            try:
+                t_bed = float(data["bed"])
+                t_bed = max(0.0, min(150.0, t_bed))
+                if w and hasattr(w, "set_temperature"):
+                    w.set_temperature("bed", t_bed)
+                elif w and hasattr(w, "inject_gcode"):
+                    w.inject_gcode(f"M140 S{t_bed:.1f}")
+                else:
+                    requests.post(_mr("/printer/gcode/script"), params={"script": f"M140 S{t_bed:.1f}"}, timeout=_TIMEOUT_SHORT)
+                results["bed"] = t_bed
+            except Exception as e:
+                return jsonify({"error": f"Invalid bed temperature: {e}"}), 400
+
+        return jsonify({"status": "ok", "set": results})
+
+    # Single-heater format: {"heater": "extruder"|"bed", "target": 210}
+    heater = str(data.get("heater", "")).lower().strip()
+    target = data.get("target")
+    if target is None:
+        return jsonify({"error": "Missing 'target' temperature"}), 400
+
+    try:
+        target_val = float(target)
+    except (ValueError, TypeError):
+        return jsonify({"error": f"Invalid temperature value: {target}"}), 400
+
+    if "bed" in heater:
+        target_val = max(0.0, min(150.0, target_val))
+        gcode = f"M140 S{target_val:.1f}"
+        heater_key = "bed"
+    elif "ext" in heater or "nozzle" in heater or heater == "tool0":
+        target_val = max(0.0, min(350.0, target_val))
+        gcode = f"M104 S{target_val:.1f}"
+        heater_key = "extruder"
+    else:
+        return jsonify({"error": f"Unknown heater: {heater}"}), 400
+
+    if w and hasattr(w, "set_temperature"):
+        w.set_temperature(heater_key, target_val)
+        return jsonify({"status": "ok", "heater": heater_key, "target": target_val, "mode": "sim"})
+    elif w and hasattr(w, "inject_gcode"):
+        w.inject_gcode(gcode)
+        return jsonify({"status": "ok", "heater": heater_key, "target": target_val, "mode": "sim"})
+
+    try:
+        res = requests.post(_mr("/printer/gcode/script"), params={"script": gcode}, timeout=_TIMEOUT_SHORT)
+        return jsonify({"status": "ok" if res.ok else "error", "heater": heater_key, "target": target_val})
+    except Exception as e:
+        return _forward_error(e, "temperature")
+
+
 @printer_bp.route("/gcode", methods=["POST"])
 def send_gcode():
     data = request.json or {}
     cmd  = data.get("command", "").strip()
     if not cmd:
         return jsonify({"error": "No command"}), 400
-    if not _is_safe_gcode(cmd):
+    if not _is_safe_gcode(cmd, known_macros()):
         return jsonify({"error": f"Command not in safe list: {cmd}"}), 403
     try:
         res = requests.post(
@@ -393,13 +574,55 @@ def send_gcode():
 @printer_bp.route("/firmware_restart", methods=["POST"])
 def firmware_restart():
     try:
-        res = requests.post(
-            _mr("/printer/gcode/script?script=FIRMWARE_RESTART"),
-            timeout=_TIMEOUT_SHORT,
-        )
+        import workers
+        w = workers._active_worker
+        if w and hasattr(w, "inject_gcode"):
+            w.inject_gcode("FIRMWARE_RESTART")
+            return jsonify({"status": "ok", "mode": "sim"})
+
+        # Try Moonraker's dedicated endpoint first
+        res = requests.post(_mr("/printer/firmware_restart"), timeout=_TIMEOUT_SHORT)
+        if not res.ok:
+            res = requests.post(_mr("/printer/gcode/script?script=FIRMWARE_RESTART"), timeout=_TIMEOUT_SHORT)
         return jsonify({"status": "ok" if res.ok else "error"})
     except Exception as e:
         return _forward_error(e, "firmware_restart")
+
+
+@printer_bp.route("/server_restart", methods=["POST"])
+def server_restart():
+    try:
+        res = requests.post(_mr("/server/restart"), timeout=_TIMEOUT_SHORT)
+        return jsonify({"status": "ok" if res.ok else "error"})
+    except Exception as e:
+        return _forward_error(e, "server_restart")
+
+
+@printer_bp.route("/info", methods=["GET"])
+def printer_info():
+    try:
+        import workers
+        w = workers._active_worker
+        if w and hasattr(w, "inject_gcode"):
+            klippy_state = getattr(w, "_klippy_state", "ready")
+            klippy_msg = getattr(w, "_klippy_state_message", "")
+            return jsonify({
+                "moonraker_online": True,
+                "state": klippy_state,
+                "state_message": klippy_msg,
+                "klippy_connected": klippy_state not in ("shutdown", "disconnected", "error"),
+                "hostname": "indus3d-sim",
+            })
+        from services.moonraker_client import MoonrakerClient
+        client = MoonrakerClient()
+        return jsonify(client.get_printer_info())
+    except Exception as e:
+        return jsonify({
+            "moonraker_online": False,
+            "state": "offline",
+            "state_message": str(e),
+            "klippy_connected": False,
+        })
 
 
 
@@ -461,6 +684,43 @@ def machine_shutdown():
     except Exception as e:
         return _forward_error(e, "machine/shutdown")
 
+
+@printer_bp.route("/system/stats", methods=["GET"])
+def system_stats():
+    """System health statistics from Moonraker."""
+    try:
+        proc_res = requests.get(_mr("/machine/proc_stats"), timeout=_TIMEOUT_SHORT)
+        proc_data = proc_res.json().get("result", {}) if proc_res.ok else {}
+
+        sys_res = requests.get(_mr("/machine/system_info"), timeout=_TIMEOUT_SHORT)
+        sys_data = sys_res.json().get("result", {}).get("system_info", {}) if sys_res.ok else {}
+
+        mem = proc_data.get("system_memory", {})
+        total_mem = mem.get("total", 0)
+        used_mem = mem.get("used", 0)
+        mem_pct = round((used_mem / total_mem) * 100, 1) if total_mem else 0.0
+
+        stats = {
+            "cpu_temp": proc_data.get("cpu_temp"),
+            "cpu_usage": proc_data.get("system_cpu_usage", {}).get("cpu", 0),
+            "memory": {
+                "total": total_mem,
+                "used": used_mem,
+                "available": mem.get("available", 0),
+                "percent": mem_pct,
+            },
+            "network": proc_data.get("network", {}),
+            "system_info": {
+                "distribution": sys_data.get("distribution", {}),
+                "cpu_info": sys_data.get("cpu_info", {}),
+                "python": sys_data.get("python", {}),
+            },
+        }
+        return jsonify({"status": "ok", "stats": stats})
+    except Exception as e:
+        return _forward_error(e, "system stats")
+
+
 # ── Bed mesh ──────────────────────────────────────────────────────────────────
 
 
@@ -474,6 +734,85 @@ def bed_mesh():
         return (res.text, res.status_code, {"Content-Type": "application/json"})
     except Exception as e:
         return _forward_error(e, "bedmesh")
+
+
+@printer_bp.route("/bedmesh/profiles", methods=["GET"])
+def bedmesh_profiles():
+    try:
+        res = requests.get(
+            _mr("/printer/objects/query?bed_mesh"),
+            timeout=_TIMEOUT_SHORT,
+        )
+        if not res.ok:
+            return (res.text, res.status_code, {"Content-Type": "application/json"})
+        bed_mesh_data = res.json().get("result", {}).get("status", {}).get("bed_mesh", {})
+        return jsonify({
+            "profile_name": bed_mesh_data.get("profile_name", ""),
+            "profiles": bed_mesh_data.get("profiles", {}),
+            "probed_matrix": bed_mesh_data.get("probed_matrix", []),
+            "mesh_matrix": bed_mesh_data.get("mesh_matrix", []),
+        })
+    except Exception as e:
+        return _forward_error(e, "bedmesh profiles")
+
+
+@printer_bp.route("/bedmesh/profile/load", methods=["POST"])
+def bedmesh_profile_load():
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Profile name is required"}), 400
+    try:
+        cmd = f"BED_MESH_PROFILE LOAD={name}"
+        res = requests.post(
+            _mr("/printer/gcode/script"),
+            params={"script": cmd},
+            timeout=_TIMEOUT_LONG,
+        )
+        if not res.ok:
+            return jsonify({"status": "error", "message": f"Failed to load profile {name}"}), res.status_code
+        return jsonify({"status": "ok", "message": f"Loaded profile {name}"})
+    except Exception as e:
+        return _forward_error(e, f"bedmesh profile load {name}")
+
+
+@printer_bp.route("/bedmesh/profile/save", methods=["POST"])
+def bedmesh_profile_save():
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "Profile name is required"}), 400
+    try:
+        cmd = f"BED_MESH_PROFILE SAVE={name}"
+        res = requests.post(
+            _mr("/printer/gcode/script"),
+            params={"script": cmd},
+            timeout=_TIMEOUT_LONG,
+        )
+        if not res.ok:
+            return jsonify({"status": "error", "message": f"Failed to save profile {name}"}), res.status_code
+        return jsonify({"status": "ok", "message": f"Saved profile {name}"})
+    except Exception as e:
+        return _forward_error(e, f"bedmesh profile save {name}")
+
+
+@printer_bp.route("/bedmesh/profile/<name>", methods=["DELETE"])
+def bedmesh_profile_remove(name: str):
+    name = name.strip()
+    if not name:
+        return jsonify({"error": "Profile name is required"}), 400
+    try:
+        cmd = f"BED_MESH_PROFILE REMOVE={name}"
+        res = requests.post(
+            _mr("/printer/gcode/script"),
+            params={"script": cmd},
+            timeout=_TIMEOUT_LONG,
+        )
+        if not res.ok:
+            return jsonify({"status": "error", "message": f"Failed to remove profile {name}"}), res.status_code
+        return jsonify({"status": "ok", "message": f"Removed profile {name}"})
+    except Exception as e:
+        return _forward_error(e, f"bedmesh profile remove {name}")
 
 
 def _flash_led_state(state_key: str):
@@ -533,6 +872,38 @@ def bed_mesh_calibrate():
         return _forward_error(e, "bedmesh calibrate")
 
 
+# ── Endstops ──────────────────────────────────────────────────────────────────
+
+
+@printer_bp.route("/endstops", methods=["GET"])
+def get_endstops():
+    """Query current endstop states via Moonraker/Klipper."""
+    try:
+        q_res = requests.post(
+            _mr("/printer/gcode/script"),
+            params={"script": "QUERY_ENDSTOPS"},
+            timeout=_TIMEOUT_SHORT,
+        )
+        if not q_res.ok:
+            return jsonify({"status": "unavailable", "endstops": {}})
+
+        time.sleep(0.1)
+
+        status_res = requests.get(
+            _mr("/printer/query_endstops/status"),
+            timeout=_TIMEOUT_SHORT,
+        )
+        if not status_res.ok:
+            return jsonify({"status": "unavailable", "endstops": {}})
+
+        data = status_res.json()
+        endstops = data.get("result", {}).get("status", {})
+        return jsonify({"status": "ok", "endstops": endstops})
+    except Exception as e:
+        logging.warning(f"⚠️ Endstops query failed: {e}")
+        return jsonify({"status": "unavailable", "endstops": {}})
+
+
 # ── Spoolman (filament inventory, via Moonraker's [spoolman] component) ────────
 # Moonraker must have [spoolman] configured in moonraker.conf pointing at a
 # running Spoolman instance — see docs/DEVELOPMENT.md. If it isn't configured,
@@ -550,6 +921,30 @@ def spoolman_status():
         return _forward_error(e, "spoolman status")
 
 
+@printer_bp.route("/spoolman/proxy", methods=["GET", "POST"])
+def spoolman_proxy():
+    """Generic proxy to Moonraker's Spoolman proxy endpoint."""
+    try:
+        data = request.get_json(silent=True) or {}
+        path = data.get("path", "/api/v1/spool")
+        if path == "/v1/spool" or path.startswith("/v1/"):
+            path = f"/api{path}"
+        req_method = data.get("request_method", request.method if request.method in ("GET", "POST") else "GET")
+        query = data.get("query", "")
+        res = requests.post(
+            _mr("/server/spoolman/proxy"),
+            json={
+                "request_method": req_method,
+                "path": path,
+                "query": query,
+            },
+            timeout=_TIMEOUT_SHORT,
+        )
+        return (res.text, res.status_code, {"Content-Type": "application/json"})
+    except Exception as e:
+        return _forward_error(e, "spoolman proxy")
+
+
 @printer_bp.route("/spoolman/spools", methods=["GET"])
 def spoolman_list_spools():
     """List non-archived spools via Moonraker's Spoolman proxy.
@@ -559,7 +954,7 @@ def spoolman_list_spools():
             _mr("/server/spoolman/proxy"),
             json={
                 "request_method": "GET",
-                "path": "/v1/spool",
+                "path": "/api/v1/spool",
                 "query": "archived=false",
             },
             timeout=_TIMEOUT_SHORT,
@@ -635,10 +1030,8 @@ def get_macros():
         data = res.json().get("result", {}).get("objects", [])
 
         # Filter for gcode_macro and extract the name
-        macros = [obj.replace("gcode_macro ", "") for obj in data if obj.startswith("gcode_macro ")]
+        macros = [obj.replace("gcode_macro ", "") for obj in data if obj.startswith("gcode_macro ") and not obj.startswith("gcode_macro _")]
 
-        # Optionally, we could fetch help strings by querying /printer/objects/query?gcode_macro <name>
-        # but just returning the names is enough for buttons.
         return jsonify({"macros": sorted(macros)})
     except Exception as e:
         return jsonify({"error": str(e)}), 502
@@ -719,6 +1112,9 @@ def add_printer_instance():
         data = printer_registry.add_printer(body.get("name"), body.get("host"), body.get("port"))
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logging.exception("Failed to save LED profile")
+        return jsonify({"error": str(e)}), 500
     return jsonify(data)
 
 @printer_bp.route("/instances/<printer_id>", methods=["DELETE"])
@@ -728,6 +1124,9 @@ def remove_printer_instance(printer_id):
         data = printer_registry.remove_printer(printer_id)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logging.exception("Failed to save LED profile")
+        return jsonify({"error": str(e)}), 500
     return jsonify(data)
 
 @printer_bp.route("/instances/<printer_id>/activate", methods=["POST"])
@@ -779,6 +1178,9 @@ def set_led_manual():
         led_controller.hex_to_rgb01(color)  # validate before sending
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logging.exception("Failed to save LED profile")
+        return jsonify({"error": str(e)}), 500
     ok = led_controller.set_led(name, color)
     if not ok:
         return jsonify({"error": "Could not reach the printer to set the LED color"}), 502
@@ -810,6 +1212,9 @@ def save_led_profile():
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logging.exception("Failed to save LED profile")
+        return jsonify({"error": str(e)}), 500
     return jsonify(profile)
 
 

@@ -117,7 +117,10 @@ def worker():
         return m
 
     patches = [
-        mock.patch.object(tw.requests, "get", side_effect=fake_get),
+        mock.patch.object(w._session, "get", side_effect=fake_get),
+        mock.patch.object(tw._moonraker, "get_printer_info", return_value={
+            "moonraker_online": True, "state": "ready", "klippy_connected": True, "state_message": ""}),
+        mock.patch.object(tw.TelemetryWorker, "_discover_temp_sensors", return_value=[]),
         mock.patch.object(tw.command_pipeline, "tick", side_effect=lambda snap, src="live": seen["ticks"].append(dict(snap))),
         mock.patch.object(tw.command_pipeline, "run_quality_cycle", return_value=[]),
         mock.patch.object(tw.quality_controller, "update", side_effect=lambda snap, *a: seen["qc"].append(snap["print_state"]) or []),

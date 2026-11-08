@@ -104,17 +104,17 @@ def inspection_alert():
         return jsonify({"status": "cooldown"})
 
     # Only worth pausing if there's actually something printing right now.
-    from api.server import _worker
-    w = _worker()
-    if w and hasattr(w, "latest") and isinstance(w.latest, dict):
-        print_state = w.latest.get("print_state", "standby")
-    else:
-        try:
+    try:
+        from api.server import _worker
+        w = _worker()
+        if w and hasattr(w, "latest") and isinstance(w.latest, dict):
+            print_state = w.latest.get("print_state", "standby")
+        else:
             r = requests.get(f"{settings.moonraker_url}/printer/objects/query?print_stats", timeout=3)
             print_state = r.json().get("result", {}).get("status", {}).get("print_stats", {}).get("state", "standby")
-        except Exception as e:
-            logging.info(f"🔴 Could not check print state for inspection alert: {e}")
-            print_state = "standby"
+    except Exception as e:
+        logging.info(f"🔴 Could not check print state for inspection alert: {e}")
+        print_state = "standby"
 
     if print_state != "printing":
         return jsonify({"status": "not_printing"})
@@ -125,27 +125,25 @@ def inspection_alert():
     
     # ── Feature 2: Autonomous First-Layer Squish ──
     if label == "z_too_high":
-        gcode_cmd = "SET_GCODE_OFFSET Z_ADJUST=-0.01 MOVE=1"
-        if w and type(w).__name__ == "SimulatedTelemetryWorker":
-            w.inject_gcode(gcode_cmd)
-        else:
-            try:
-                requests.post(f"{settings.moonraker_url}/printer/gcode/script", json={"script": gcode_cmd}, timeout=5)
-            except Exception as e:
-                logging.info(f"⚠️ Failed to baby-step: {e}")
-        _log_action({"timestamp": time.time(), "alert_id": "z_offset_ai", "gcode": gcode_cmd, "description": "AI detected Z too high - Babystepping down", "status": "executed"})
+        try:
+            if w and hasattr(w, "inject_gcode"):
+                w.inject_gcode("SET_GCODE_OFFSET Z_ADJUST=-0.01 MOVE=1")
+            else:
+                requests.post(f"{settings.moonraker_url}/printer/gcode/script", json={"script": "SET_GCODE_OFFSET Z_ADJUST=-0.01 MOVE=1"}, timeout=5)
+            _log_action({"timestamp": time.time(), "alert_id": "z_offset_ai", "gcode": "SET_GCODE_OFFSET Z_ADJUST=-0.01", "description": "AI detected Z too high - Babystepping down", "status": "executed"})
+        except Exception as e:
+            logging.info(f"⚠️ Failed to baby-step: {e}")
         return jsonify({"status": "executed", "action": "babystep_down"})
         
     elif label == "z_too_low":
-        gcode_cmd = "SET_GCODE_OFFSET Z_ADJUST=0.01 MOVE=1"
-        if w and type(w).__name__ == "SimulatedTelemetryWorker":
-            w.inject_gcode(gcode_cmd)
-        else:
-            try:
-                requests.post(f"{settings.moonraker_url}/printer/gcode/script", json={"script": gcode_cmd}, timeout=5)
-            except Exception as e:
-                logging.info(f"⚠️ Failed to baby-step: {e}")
-        _log_action({"timestamp": time.time(), "alert_id": "z_offset_ai", "gcode": gcode_cmd, "description": "AI detected Z too low - Babystepping up", "status": "executed"})
+        try:
+            if w and hasattr(w, "inject_gcode"):
+                w.inject_gcode("SET_GCODE_OFFSET Z_ADJUST=0.01 MOVE=1")
+            else:
+                requests.post(f"{settings.moonraker_url}/printer/gcode/script", json={"script": "SET_GCODE_OFFSET Z_ADJUST=0.01 MOVE=1"}, timeout=5)
+            _log_action({"timestamp": time.time(), "alert_id": "z_offset_ai", "gcode": "SET_GCODE_OFFSET Z_ADJUST=0.01", "description": "AI detected Z too low - Babystepping up", "status": "executed"})
+        except Exception as e:
+            logging.info(f"⚠️ Failed to baby-step: {e}")
         return jsonify({"status": "executed", "action": "babystep_up"})
 
     # ── Non-Catastrophic Defects (Stringing, Zits) ──
@@ -160,9 +158,11 @@ def inspection_alert():
         notify(f"👁️ Indus3D Vision: Warning — {description}")
         return jsonify({"status": "warning_logged", "description": description})
 
-    # ── Feature 3: Auto-Abort & LED Spaghetti Alerts (Catastrophic Failures) ──
+    # ── Feature 3: Auto-Abort & LED Spaghetti Alerts ──
+    # If we get here, it's a catastrophic failure (e.g., 'Spaghetti Failure' or 'Part Detached')
+    
     pause_ok = False
-    if w and type(w).__name__ == "SimulatedTelemetryWorker":
+    if w and hasattr(w, "inject_gcode"):
         w.inject_gcode("PAUSE")
         pause_ok = True
     else:

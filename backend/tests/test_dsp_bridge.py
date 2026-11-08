@@ -280,5 +280,71 @@ class TestRustResonanceAnalyser(unittest.TestCase):
                 pass
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Test 6: VibrationMonitor standby vs offline state
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVibrationMonitor(unittest.TestCase):
+    def test_normalise_axis_handles_none_and_malformed(self):
+        from workers.dsp_bridge import _normalise_axis
+        res = _normalise_axis({"rms": None, "hz": "invalid", "mag": float("nan")})
+        self.assertEqual(res["rms"], 0.0)
+        self.assertEqual(res["peak_hz"], 0.0)
+        self.assertEqual(res["magnitude"], 0.0)
+        # Non-dict input
+        res2 = _normalise_axis(None)
+        self.assertEqual(res2["rms"], 0.0)
+
+    def test_vibration_monitor_dsp_available_standby(self):
+        from digital_twin.vibration_monitor import VibrationMonitor
+        vm = VibrationMonitor()
+        vib_dict, alerts = vm.update(dsp_latest=None, print_state="standby", dsp_available=True)
+        self.assertTrue(vib_dict["available"])
+        self.assertTrue(vib_dict["dsp_online"])
+        self.assertFalse(vib_dict["streaming"])
+        self.assertEqual(alerts, [])
+        self.assertEqual(vib_dict["x"]["rms"], 0.0)
+
+    def test_vibration_monitor_dsp_unavailable_offline(self):
+        from digital_twin.vibration_monitor import VibrationMonitor
+        vm = VibrationMonitor()
+        vib_dict, alerts = vm.update(dsp_latest=None, print_state="standby", dsp_available=False)
+        self.assertFalse(vib_dict["available"])
+        self.assertFalse(vib_dict["dsp_online"])
+        self.assertFalse(vib_dict["streaming"])
+        self.assertEqual(alerts, [])
+
+    def test_vibration_monitor_streaming(self):
+        from digital_twin.vibration_monitor import VibrationMonitor
+        vm = VibrationMonitor()
+        mock_dsp = {
+            "x": {"rms": 0.02, "peak_hz": 42.0, "kurtosis": 2.9, "psd": []},
+            "y": {"rms": 0.03, "peak_hz": 50.0, "kurtosis": 3.0, "psd": []},
+            "z": {"rms": 0.01, "peak_hz": 30.0, "kurtosis": 2.8, "psd": []},
+        }
+        vib_dict, alerts = vm.update(dsp_latest=mock_dsp, print_state="printing", dsp_available=True)
+        self.assertTrue(vib_dict["available"])
+        self.assertTrue(vib_dict["dsp_online"])
+        self.assertTrue(vib_dict["streaming"])
+        self.assertEqual(vib_dict["x"]["rms"], 0.02)
+
+    def test_vibration_monitor_autoz_integration(self):
+        from digital_twin.vibration_monitor import VibrationMonitor
+        vm = VibrationMonitor()
+        autoz_data = {
+            "is_contact": False,
+            "hffi": 0.48,
+            "jerk_z": 12.0,
+            "kurtosis_z": 3.2,
+            "regime": "rubbing",
+            "recommended_trim": 0.025,
+        }
+        dsp_data = {"x": {}, "y": {}, "z": {}}
+        vib_dict, alerts = vm.update(dsp_latest=dsp_data, print_state="printing", dsp_available=True, autoz_latest=autoz_data)
+        self.assertEqual(vib_dict["auto_z"]["regime"], "rubbing")
+        self.assertEqual(vib_dict["auto_z"]["recommended_trim"], 0.025)
+        self.assertTrue(any("rubbing" in a["msg"].lower() for a in alerts))
+
+
 if __name__ == "__main__":
     unittest.main()
