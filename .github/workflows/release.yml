@@ -1,0 +1,49 @@
+name: Release Indus3D
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on tags like v1.0.0
+
+jobs:
+  build_and_release:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Node.js 18
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+        
+    - name: Install Frontend Dependencies
+      working-directory: ./frontend
+      run: npm ci
+      
+    - name: Build Frontend
+      working-directory: ./frontend
+      run: npm run build
+      
+    - name: Package Release
+      run: |
+        mkdir -p release/indus3d
+        # Copy backend
+        cp -r backend release/indus3d/
+        # Copy built frontend (no node_modules needed!)
+        cp -r frontend/dist release/indus3d/frontend_dist
+        # Copy Klipper integration configs
+        cp indus3d.cfg release/indus3d/
+        cp -r docs release/indus3d/
+        
+        # Zip it up
+        cd release
+        zip -r indus3d-release.zip indus3d/
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: release/indus3d-release.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

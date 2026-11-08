@@ -1,0 +1,10 @@
+; DISABLED EXAMPLE — DO NOT RENAME AND RUN
+; This sample is intentionally non-machine-specific.
+; Generate a reviewed program instead:
+; python3 ../generate_motion_gcode.py --pattern rectangle \
+;   --x-max <verified_X_position_max> --y-max <verified_Y_position_max> \
+;   --z-max <verified_Z_position_max> --margin <conservative_margin> \
+;   --z-clearance <safe_height> --feedrate <slow_speed> \
+;   --output /tmp/motion-test.gcode.review
+;
+; Then run validate_gcode.py and complete the physical preflight checklist.

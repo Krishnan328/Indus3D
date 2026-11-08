@@ -4,6 +4,7 @@ indus_env/
 venv/
 .venv/
 db/flight_record.db
+data/timelapse/
 Training/db/flight_record.db
 Training/yolov8n.pt
 Training/*.pt

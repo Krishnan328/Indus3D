@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose an improvement to Indus3D.
+title: "[Feature]: "
+labels: [enhancement, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the user problem first. For printer-control features, include safety considerations and a simulator test path.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What is difficult today, and for whom?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Printer safety and test plan
+      description: Required for features that issue G-code or affect printer behaviour.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

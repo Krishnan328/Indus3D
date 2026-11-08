@@ -1,0 +1,14 @@
+{
+  "metadata": {
+    "index": 90,
+    "module": "indus3d_extension",
+    "maintained_by": "Krishnan328",
+    "display_name": "Indus3D",
+    "description": [
+      "Real-time digital twin and closed-loop quality controller for Klipper.",
+      "Installs the backend service, dashboard and Moonraker update-manager entry."
+    ],
+    "repo": "https://github.com/Krishnan328/Indus3D",
+    "updates": true
+  }
+}

@@ -1,0 +1,6 @@
+*.log
+*.bak
+*.bkp
+*.gcode
+.moonraker*.bkp
+.gcode_move*

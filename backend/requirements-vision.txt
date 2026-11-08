@@ -1,0 +1,31 @@
+# requirements-vision.txt
+# ─────────────────────────────────────────────────────────────────────────────
+# Vision pipeline dependencies for the companion device (NOT the main Pi/backend).
+# Install in a dedicated venv: python3 -m venv .venv-vision && pip install -r this
+#
+# Device-Tier legend:
+#   Tier 0 (all)     — OpenCV contour matching — opencv-python, numpy, requests
+#   Tier 1 (Pi4B+)   — CAXTON ONNX             — + onnxruntime
+#   Tier 2 (Pi5+)    — ProtoNet ShuffleNetV2    — + torch (CPU) + torchvision
+#   Tier 3 (Desktop) — YOLOv8                   — + ultralytics
+
+# ── Core (required for all tiers) ─────────────────────────────────────────────
+opencv-python>=4.8,<5.0
+numpy>=1.24,<2.0
+requests>=2.28
+
+# ── Tier 1: CAXTON ONNX Runtime ───────────────────────────────────────────────
+# CPU-only ONNX — ~7 MB, no PyTorch needed. Fine for Pi 4B.
+onnxruntime>=1.16
+
+# ── Tier 2: ProtoNet ShuffleNetV2 (PyTorch CPU-only) ─────────────────────────
+# Install CPU-only torch to keep pip size manageable on Pi 5.
+# Uncomment on Pi 5 / Desktop:
+# torch>=2.1 --index-url https://download.pytorch.org/whl/cpu
+# torchvision>=0.16 --index-url https://download.pytorch.org/whl/cpu
+
+# ── Tier 3: YOLOv8 (Desktop / Pi 5 with USB accel) ───────────────────────────
+# ultralytics pulls in PyTorch automatically — only install on x86 Desktop
+# or Pi 5 with adequate RAM (4 GB+).
+# Uncomment on Desktop:
+# ultralytics>=8.0

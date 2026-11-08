@@ -1,0 +1,28 @@
+[Unit]
+Description=Indus3D ESP8266 bed sensor hub daemon (ADXL345 crash detection + BME280 chamber telemetry)
+After=network.target moonraker.service
+Wants=moonraker.service
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@CONFIG_DIR@
+Environment=PYTHONUNBUFFERED=1
+# world-readable capture files: the Klipper user's analysis command reads them
+UMask=0022
+StateDirectory=indus3d/bed_hub
+StateDirectoryMode=0755
+ExecStart=@PYTHON@ @INSTALL_DIR@/scripts/esp_bed_monitor_daemon.py --serial auto --moonraker http://127.0.0.1:7125 --data-dir ${STATE_DIRECTORY}@EXTRA_ARGS@
+# serial access without relying on the user's own groups
+SupplementaryGroups=dialout
+# the daemon reconnects by itself; this only covers a crash of the daemon
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
