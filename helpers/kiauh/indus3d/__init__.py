@@ -21,6 +21,8 @@ INDUS_KLIPPER_MODULE_SRC = INDUS_DIR.joinpath("klipper_modules/indus_vibration.p
 INDUS_SERVICE = "indus3d.service"
 INDUS_TRACKER_SERVICE = "indus3d-tracker.service"
 INDUS_TRACKER_SCRIPT = INDUS_DIR.joinpath("helpers/trackers/corrective_gcode_tracker.py")
+INDUS_SENSOR_INSTALLER = INDUS_DIR.joinpath("helpers/filament_sensor/install_sensor.py")
+INDUS_SENSOR_SERVICE = "indus3d-filament-sensor.service"
 INDUS_CFG_NAME = "indus3d.cfg"
 INDUS_PORT = 5001
 

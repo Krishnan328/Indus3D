@@ -32,6 +32,8 @@ from extensions.indus3d import (
     INDUS_PORT,
     INDUS_REPO,
     INDUS_REQ_FILE,
+    INDUS_SENSOR_INSTALLER,
+    INDUS_SENSOR_SERVICE,
     INDUS_SERVICE,
     INDUS_TRACKER_SCRIPT,
     INDUS_TRACKER_SERVICE,
@@ -94,6 +96,9 @@ class Indus3dExtension(BaseExtension):
         install_tracker = get_confirm(
             "Also install the corrective G-code tracker (read-only logger)?", True
         )
+        install_sensor = get_confirm(
+            "Also install the smart filament sensor daemon? (only with the sensor hardware)", False
+        )
         install_vibration = KLIPPER_EXTRAS.exists() and get_confirm(
             "Link the ADXL vibration streaming module into Klipper?", False
         )
@@ -107,6 +112,8 @@ class Indus3dExtension(BaseExtension):
                 self._link_vibration_module(kl_instances)
 
             self._create_service(INDUS_SERVICE)
+            if install_sensor:
+                self._run_sensor_installer(kl_instances)
             if install_tracker:
                 self._create_tracker_service()
 
@@ -141,10 +148,12 @@ class Indus3dExtension(BaseExtension):
         try:
             self._stop(INDUS_SERVICE)
             self._stop(INDUS_TRACKER_SERVICE)
+            self._stop(INDUS_SENSOR_SERVICE)
             git_pull_wrapper(INDUS_DIR)
             self._install_dependencies()
             self._start(INDUS_SERVICE)
             self._start(INDUS_TRACKER_SERVICE)
+            self._start(INDUS_SENSOR_SERVICE)
             Logger.print_ok("Indus3D updated!")
         except Exception as e:
             Logger.print_error(f"Error during update of Indus3D:\n{e}")
@@ -158,6 +167,7 @@ class Indus3dExtension(BaseExtension):
         try:
             remove_system_service(INDUS_TRACKER_SERVICE)
             remove_system_service(INDUS_SERVICE)
+            self._run_sensor_installer(kl_instances, uninstall=True)
 
             BackupService().backup_moonraker_conf()
             remove_config_section(UPDATE_MANAGER_SECTION, mr_instances)
@@ -198,6 +208,20 @@ class Indus3dExtension(BaseExtension):
             if run(cmd, cwd=INDUS_FRONTEND_DIR).returncode != 0:
                 Logger.print_warn(f"'{' '.join(cmd)}' failed; dashboard not built.")
                 return
+
+    def _run_sensor_installer(self, kl_instances: List[Klipper], uninstall: bool = False) -> None:
+        """Install (or remove) the filament sensor daemon via its own installer, using Indus3D's venv
+        (it already has pyserial). The installer is idempotent and keeps the user's sensor settings."""
+        if not INDUS_SENSOR_INSTALLER.exists() or not kl_instances:
+            return
+        cmd = [str(INDUS_ENV.joinpath("bin/python")), str(INDUS_SENSOR_INSTALLER),
+               "--klipper-config", str(kl_instances[0].base.cfg_dir)]
+        cmd += ["--uninstall"] if uninstall else ["--python", str(INDUS_ENV.joinpath("bin/python"))]
+        Logger.print_status(f"{'Removing' if uninstall else 'Installing'} the filament sensor daemon ...")
+        try:
+            run(cmd, check=True)
+        except Exception as e:  # noqa: BLE001 — the sensor is optional; never fail the Indus3D install over it
+            Logger.print_warn(f"Filament sensor step did not complete: {e}")
 
     def _create_service(self, name: str) -> None:
         content = f"""[Unit]

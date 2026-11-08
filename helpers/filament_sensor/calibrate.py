@@ -11,6 +11,7 @@ import urllib.request
 import urllib.error
 
 API_URL = "http://127.0.0.1:7126"
+ACTION_HEADERS = {"X-Indus3D-Action": "1"}   # required by the daemon's control endpoints
 
 def get_daemon_status():
     try:
@@ -22,7 +23,8 @@ def get_daemon_status():
 
 def tare_empty_daemon():
     try:
-        with urllib.request.urlopen(f"{API_URL}/tare_empty", timeout=2.0) as resp:
+        req = urllib.request.Request(f"{API_URL}/tare_empty", headers=ACTION_HEADERS)
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
             return resp.status == 200
     except Exception as e:
         print(f"Error calling tare_empty: {e}")
@@ -31,7 +33,8 @@ def tare_empty_daemon():
 def calibrate_span_daemon(target_mm: float):
     try:
         url = f"{API_URL}/calibrate_span?target={target_mm:.3f}"
-        with urllib.request.urlopen(url, timeout=2.0) as resp:
+        req = urllib.request.Request(url, headers=ACTION_HEADERS)
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
             return resp.status == 200
     except Exception as e:
         print(f"Error calling calibrate_span: {e}")

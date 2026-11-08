@@ -111,6 +111,11 @@ url = http://127.0.0.1:7125
 api_key = 
 
 [api]
+# Address the status/control server listens on. Keep 127.0.0.1: the control
+# endpoints have no authentication, and Indus3D reaches the daemon locally
+# (its own authenticated API proxies the actions). Use 0.0.0.0 only on a
+# network you fully trust.
+host = 127.0.0.1
 # Local HTTP server port for Indus3D Web UI telemetry
 port = 7126
 """
@@ -462,6 +467,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   const canvas = document.getElementById('chart');
   const ctx = canvas.getContext('2d');
 
+  const ACTION_HEADERS = {'X-Indus3D-Action': '1'};  // control endpoints require this header
+
   function resizeCanvas() {
     canvas.width = canvas.parentElement.clientWidth - 40;
     canvas.height = 220;
@@ -646,7 +653,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   async function tareEmpty() {
     if (confirm("Confirm: Are the sensor bearings completely EMPTY (no filament loaded)?")) {
-      const res = await fetch('/tare_empty');
+      const res = await fetch('/tare_empty', {headers: ACTION_HEADERS});
       if (res.ok) {
         alert("Empty bearing reference tared to 0.000 mm & saved to Flash!");
       } else {
@@ -660,7 +667,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     if (val) {
       const num = parseFloat(val);
       if (!isNaN(num) && num >= 0.5 && num <= 3.5) {
-        const res = await fetch('/calibrate_span?target=' + num);
+        const res = await fetch('/calibrate_span?target=' + num, {headers: ACTION_HEADERS});
         if (res.ok) {
           alert("Span calibration command sent for " + num.toFixed(3) + " mm!");
         } else {
@@ -674,13 +681,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   async function resetSpool() {
     if (confirm("Reset spool usage counter back to 0.0 g?")) {
-      await fetch('/reset_spool');
+      await fetch('/reset_spool', {headers: ACTION_HEADERS});
     }
   }
 
   async function resetBowden() {
     if (confirm("Flush saved Bowden tube diameter profile?")) {
-      await fetch('/reset_bowden');
+      await fetch('/reset_bowden', {headers: ACTION_HEADERS});
     }
   }
 
@@ -896,6 +903,7 @@ class Indus3DSensorDaemon:
 
         self.moonraker_url = config.get("moonraker", "url", fallback="http://127.0.0.1:7125").rstrip("/")
         self.moonraker_key = config.get("moonraker", "api_key", fallback="").strip()
+        self.api_host = config.get("api", "host", fallback="127.0.0.1").strip() or "127.0.0.1"
         self.api_port = config.getint("api", "port", fallback=7126)
 
     def load_state(self):
@@ -1205,22 +1213,31 @@ class Indus3DSensorDaemon:
         daemon_self = self
 
         class StatusHandler(BaseHTTPRequestHandler):
+            ACTION_PATHS = ("/tare_empty", "/calibrate_span", "/reset_spool", "/reset_bowden")
+
             def do_GET(self):
                 clean_path = self.path.split('?')[0]
+                # These GETs change state. A custom header cannot be sent by a web page on
+                # another origin without a CORS preflight (which this server never grants),
+                # so requiring it blocks drive-by requests from a browser on this machine.
+                if clean_path in self.ACTION_PATHS and self.headers.get("X-Indus3D-Action") != "1":
+                    self.send_response(403)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"error": "X-Indus3D-Action: 1 header required for control endpoints"}')
+                    return
                 if clean_path in ["/status", "/api/status"]:
                     with daemon_self.lock:
                         data = dict(daemon_self.telemetry)
                     payload = json.dumps(data, indent=2).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                     self.end_headers()
                     self.wfile.write(payload)
                 elif clean_path in ["/", "/dashboard", "/index.html", "/index"] or clean_path.startswith("/dashboard"):
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                     self.end_headers()
                     self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
@@ -1228,7 +1245,6 @@ class Indus3DSensorDaemon:
                     ok = daemon_self.send_sensor_command(bytearray([0xF5, 0x22]))
                     self.send_response(200 if ok else 500)
                     self.send_header("Content-Type", "application/json")
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
                     self.wfile.write(b'{"status": "ok", "message": "Empty bearing reference tared to 0.000 mm & saved to Flash"}')
                 elif clean_path == "/calibrate_span":
@@ -1246,7 +1262,6 @@ class Indus3DSensorDaemon:
                     ok = daemon_self.send_sensor_command(bytearray([0xF5, 0x23, low, high]))
                     self.send_response(200 if ok else 500)
                     self.send_header("Content-Type", "application/json")
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
                     self.wfile.write(json.dumps({"status": "ok", "target_mm": target_mm}).encode("utf-8"))
                 elif clean_path == "/reset_spool":
@@ -1255,7 +1270,6 @@ class Indus3DSensorDaemon:
                     daemon_self.save_state()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
                     self.wfile.write(b'{"status": "ok", "message": "Spool usage reset to 0g"}')
                 elif clean_path == "/download_csv":
@@ -1265,7 +1279,6 @@ class Indus3DSensorDaemon:
                         self.send_response(200)
                         self.send_header("Content-Type", "text/csv")
                         self.send_header("Content-Disposition", 'attachment; filename="indus3d_spool_log.csv"')
-                        self.send_header("Access-Control-Allow-Origin", "*")
                         self.end_headers()
                         self.wfile.write(csv_bytes)
                     else:
@@ -1280,7 +1293,6 @@ class Indus3DSensorDaemon:
                     daemon_self.send_klipper_gcode('RESPOND TYPE=echo MSG="Indus3D: Bowden tube diameter buffer reset to 0mm"')
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
                     self.wfile.write(b'{"status": "ok", "message": "Bowden tube buffer reset to 0mm"}')
                 else:
@@ -1290,8 +1302,9 @@ class Indus3DSensorDaemon:
             def log_message(self, format, *args):
                 pass # Suppress HTTP access logging in console
 
-        server = HTTPServer(("0.0.0.0", self.api_port), StatusHandler)
-        logging.info(f"Indus3D REST API listening on http://0.0.0.0:{self.api_port}/status")
+        server = HTTPServer((self.api_host, self.api_port), StatusHandler)
+        self.http_server = server
+        logging.info(f"Indus3D REST API listening on http://{self.api_host}:{self.api_port}/status")
         server.serve_forever()
 
     def monitor_loop(self):

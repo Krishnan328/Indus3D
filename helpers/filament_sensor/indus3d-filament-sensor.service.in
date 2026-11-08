@@ -1,0 +1,20 @@
+[Unit]
+Description=Indus3D Smart Filament Sensor Host Daemon
+After=network.target moonraker.service klipper.service
+Wants=moonraker.service
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@CONFIG_DIR@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@PYTHON@ @INSTALL_DIR@/indus3d_sensor_daemon.py --no-monitor --config @CONFIG_DIR@/indus3d_sensor.ini
+# serial access to the sensor's Pico
+SupplementaryGroups=dialout
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
