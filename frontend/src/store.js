@@ -6,6 +6,7 @@ import { createToolheadSlice } from "./slices/toolheadSlice";
 import { createUiPrefsSlice, loadUiPrefs } from "./slices/uiPrefsSlice";
 import { createFilesSlice } from "./slices/filesSlice";
 import { createThermalSlice } from "./slices/thermalSlice";
+import { createExcludeSlice } from "./slices/excludeSlice";
 
 // Keep this build's API port in sync with backend/.env's FLASK_PORT. Vite
 // substitutes VITE_* values at build time, so restart the dev server or
@@ -160,6 +161,7 @@ export const useStore = create((set, get) => ({
   ...createUiPrefsSlice(set, get),
   ...createFilesSlice(set, get, () => API),
   ...createThermalSlice(set, get, () => API),
+  ...createExcludeSlice(set, get, () => API),
 
   // ── Authentication ────────────────────────────────────────────────────────
   // Mirrors the backend's auth_required / authenticated state. Fetched once
@@ -588,32 +590,6 @@ export const useStore = create((set, get) => ({
   dismissAlert:   (id) => set((s) => ({ dismissedIds: new Set([...s.dismissedIds, id]) })),
   clearDismissed: ()   => set({ dismissedIds: new Set() }),
 
-  excludeObject: async (name) => {
-    try {
-      set((s) => {
-        const cur = s.exclude_object?.excluded_objects || [];
-        if (!cur.includes(name)) {
-          return {
-            exclude_object: {
-              ...(s.exclude_object || {}),
-              excluded_objects: [...cur, name],
-            },
-          };
-        }
-        return s;
-      });
-      const res = await fetch(`${API}/api/v1/twin/exclude_object`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      if (!res.ok) {
-        console.error("Failed to exclude object:", await res.text());
-      }
-    } catch (e) {
-      console.error("Failed to exclude object:", e.message);
-    }
-  },
 
   executeAlertAction: async (alertId) => {
     try {
