@@ -4,6 +4,7 @@ import logging
 import time
 import hashlib
 from datetime import datetime
+from services.quality_metrics import EXCURSION_ALERT_IDS
 from db.models import get_connection
 import matplotlib
 matplotlib.use('Agg')
@@ -73,7 +74,7 @@ def _generate_report_task(history_id: int, start_ts: float, end_ts: float, filen
         operator = hist_row[4] if hist_row and hist_row[4] else "N/A"
         timelapse_id = hist_row[5] if hist_row and len(hist_row) > 5 and hist_row[5] else None
         timelapse_path = hist_row[6] if hist_row and len(hist_row) > 6 and hist_row[6] else None
-        timelapse_hash = hist_row[7] if hist_row and len(hist_row) > 7 and hist_row[7] else "N/A"
+        timelapse_hash = hist_row[7] if hist_row and len(hist_row) > 7 and hist_row[7] else "not recorded"
         
         # Get active spool details for AS9100 Certificate
         c.execute("SELECT name, material, lot_number, manufacturer, material_grade FROM spools WHERE is_active = 1 LIMIT 1")
@@ -88,9 +89,9 @@ def _generate_report_task(history_id: int, start_ts: float, end_ts: float, filen
         c.execute("SELECT timestamp, alert_id, description FROM action_log WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC", (start_ts, end_ts))
         actions = c.fetchall()
         
-        excursion_count = len([a for a in actions if a[1] in ('temp_runaway', 'bed_runaway', 'vibration_high')])
+        excursion_count = len([a for a in actions if a[1] in EXCURSION_ALERT_IDS])
         
-        # Create SHA-256 Tamper-Proof Hash of Telemetry and Actions
+        # SHA-256 of the telemetry and action rows, stored in print_history so the report can be checked against it
         hasher = hashlib.sha256()
         hasher.update(str(rows).encode('utf-8'))
         hasher.update(str(actions).encode('utf-8'))
@@ -166,14 +167,18 @@ def _generate_report_task(history_id: int, start_ts: float, end_ts: float, filen
                 f"  X-Axis Width: {dim_x:.2f} mm    | Measured: {meas_x} mm\n"
                 f"  Y-Axis Depth: {dim_y:.2f} mm    | Measured: {meas_y} mm\n"
                 f"  Z-Axis Height: {dim_z:.2f} mm    | Measured: {meas_z} mm\n\n"
-                f"--- CRYPTOGRAPHIC AUDIT TRAIL ---\n"
+                f"--- INTEGRITY RECORD ---\n"
                 f"Telemetry SHA-256 Hash:\n"
                 f"{telemetry_hash}\n"
-                f"(Verify against secure Indus3D database records)\n\n"
+                f"(Compare with the value stored in the Indus3D database; this is a checksum, not a signature)\n\n"
                 f"--- VISUAL TRACEABILITY & TIMELAPSE ---\n"
-                f"Timelapse Session: {timelapse_id or 'N/A'}\n"
-                f"Video SHA-256 Hash:\n"
-                f"{timelapse_hash or 'N/A'}\n"
+                + (
+                    f"Timelapse Session: {timelapse_id}\n"
+                    f"Video SHA-256 Hash:\n"
+                    f"{timelapse_hash}\n"
+                    if timelapse_id else
+                    "Timelapse: unavailable\n"
+                )
             )
             
             fig.text(0.1, 0.88, coc_text, fontsize=10, family='monospace', verticalalignment='top')
