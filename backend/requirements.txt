@@ -1,3 +1,17 @@
+# Core requirements — everything the running backend (main.py, sim or live)
+# actually imports. Safe to install on a 1GB Pi or a Creality mainboard;
+# nothing here pulls in a compiler or a multi-hundred-MB wheel.
+#
+# Does NOT include computer vision / ML (opencv, ultralytics/PyTorch) —
+# those live in requirements-vision.txt and are only needed if you wire up
+# backend/edge/ (camera-based defect detection). Even then: run that on a
+# separate/companion device, not the same board running the twin + API.
+# See docs/DEVELOPMENT.md and CLAUDE_CONTEXT.md's hardware-efficiency notes.
+#
+# psutil and websocket-client were listed here previously for features that
+# were never actually built (system stats, Moonraker WS subscription) —
+# removed rather than left as dead weight. Re-add if/when those ship.
+
 # ==========================
 # Web Framework
 # ==========================
@@ -9,14 +23,6 @@ flask-sock>=0.7.0
 # Networking
 # ==========================
 requests>=2.31.0
-websocket-client>=1.7.0
-
-# ==========================
-# Computer Vision & AI
-# ==========================
-opencv-python>=4.9.0
-numpy>=1.26.0
-ultralytics>=8.1.0
 
 # ==========================
 # Configuration
@@ -24,6 +30,11 @@ ultralytics>=8.1.0
 python-dotenv>=1.0.0
 
 # ==========================
-# System Monitoring
+# Serial (PZEM-004T power monitor)
 # ==========================
-psutil>=7.0.0
+pyserial>=3.5
+
+# Test
+pytest==8.4.2
+
+flasgger==0.9.7.1

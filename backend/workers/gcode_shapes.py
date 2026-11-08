@@ -6,13 +6,21 @@ Byte offsets computed identically to how the frontend's
 TextEncoder counts them, so file_position aligns perfectly.
 
 Shapes:
-  "benchy" — simplified boat hull, cabin, chimney
+  "benchy" — 3DBenchy geometry, sliced from data/benchy_contours.json
+             (baked offline from an actual 3DBenchy.stl via trimesh —
+             see docs/DEVELOPMENT.md for how to regenerate it). Falls back
+             to a crude procedural hull outline if that file is missing.
   "cube"   — 20×20×20mm calibration cube with infill
 """
 
+import logging
 import math
-import io
+import os
+import json
 from config.loader import get_profile
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_BENCHY_DATA_PATH = os.path.join(_HERE, "data", "benchy_contours.json")
 
 
 # ── Calibration cube ──────────────────────────────────────────────────────────
@@ -44,10 +52,21 @@ def _cube_moves(cx, cy, layers, layer_h):
                 y = round(y + 0.4, 3);  toggle = not toggle
 
 
-# ── Benchy-like boat ──────────────────────────────────────────────────────────
+# ── Real Benchy (sliced from the actual STL) ───────────────────────────────────
 
-def _benchy_hull(cx, cy, layer, total_layers):
-    """Returns list of (x,y) perimeter points for one hull layer."""
+_benchy_data_cache = None
+
+def _load_benchy_data():
+    global _benchy_data_cache
+    if _benchy_data_cache is None:
+        with open(_BENCHY_DATA_PATH, "r") as f:
+            _benchy_data_cache = json.load(f)
+    return _benchy_data_cache
+
+
+def _synthetic_benchy_hull_fallback(cx, cy, layer, total_layers):
+    """Crude sine-wave hull outline. Only used if benchy_contours.json is
+    missing — real accuracy requires the baked STL data."""
     hull_l = 28.0;  hull_bow = 11.0
     taper  = 1.0 - (layer / total_layers) * 0.35
     w      = 14.0 * taper
@@ -68,39 +87,64 @@ def _benchy_hull(cx, cy, layer, total_layers):
 
 
 def _benchy_moves(cx, cy, layers, layer_h):
-    cabin_start  = int(layers * 0.45)
-    chimney_start= int(layers * 0.80)
-    for layer in range(layers):
-        z   = round((layer + 1) * layer_h, 3)
-        pts = _benchy_hull(cx, cy, layer, layers)
-        yield pts[0][0], pts[0][1], z, False
-        for x, y in pts[1:]:
-            yield x, y, z, True
-        yield pts[0][0], pts[0][1], z, True
-        if layer >= cabin_start:
-            cl = 7.0;  cw = 4.5;  off = -4.5
-            cp = [(cx+off-cl,cy-cw),(cx+off+cl,cy-cw),
-                  (cx+off+cl,cy+cw),(cx+off-cl,cy+cw)]
-            yield cp[0][0], cp[0][1], z, False
-            for x, y in cp[1:]:
+    """
+    Real 3DBenchy toolpath, sliced offline from an actual STL (see
+    data/benchy_contours.json). Each baked layer already carries its
+    real Z height and one or more closed perimeter contours (hull,
+    cabin, portholes, chimney — whatever the mesh actually has at that
+    height), so cabin/chimney appear naturally instead of being bolted
+    on at hardcoded layer thresholds like the old placeholder did.
+
+    The source mesh was baked at 0.4 mm.  The simulation renders a 0.2 mm
+    layer height, so each baked contour is repeated once at the intermediate
+    Z plane.  This avoids the disconnected, "layer-shifted" look produced by
+    skipping between 0.4–0.8 mm contours while keeping the real STL silhouette.
+    `layers` is the number of displayed 0.2 mm simulation layers (240 is the
+    full ~48 mm Benchy; lower values are an evenly sampled preview).
+    """
+    try:
+        data = _load_benchy_data()
+    except (FileNotFoundError, json.JSONDecodeError):
+        logging.info("⚠️  benchy_contours.json missing/invalid — "
+              "falling back to placeholder hull shape")
+        for layer in range(layers):
+            z = round((layer + 1) * layer_h, 3)
+            pts = _synthetic_benchy_hull_fallback(cx, cy, layer, layers)
+            yield pts[0][0], pts[0][1], z, False
+            for x, y in pts[1:]:
                 yield x, y, z, True
-            yield cp[0][0], cp[0][1], z, True
-        if layer >= chimney_start:
-            chx = cx - 2.0;  chy = cy;  r = 1.8
-            yield chx + r, chy, z, False
-            for deg in range(0, 361, 30):
-                rad = math.radians(deg)
-                yield round(chx + r * math.cos(rad), 2), round(chy + r * math.sin(rad), 2), z, True
+            yield pts[0][0], pts[0][1], z, True
+        return
+
+    baked = data["layers"]
+    # A 120-slice source at 0.4 mm becomes a 240-layer print at 0.2 mm.
+    n_available = len(baked) * 2
+    n_use = max(20, min(layers, n_available))
+    if n_use >= n_available:
+        selected_indices = list(range(n_available))
+    else:
+        step = (n_available - 1) / (n_use - 1)
+        selected_indices = sorted({round(i * step) for i in range(n_use)})
+
+    for display_index in selected_indices:
+        layer = baked[min(display_index // 2, len(baked) - 1)]
+        # Never reuse the sparse source Z values: this is a rendered 0.2 mm
+        # print, not a wireframe of the offline contour extraction.
+        z = round(0.08 + display_index * layer_h, 3)
+        for contour in layer["contours"]:
+            if len(contour) < 3:
+                continue
+            x0, y0 = contour[0]
+            yield cx + x0, cy + y0, z, False
+            for x, y in contour[1:]:
+                yield cx + x, cy + y, z, True
+            yield cx + x0, cy + y0, z, True   # close the loop
 
 
 # ── G-code builder ────────────────────────────────────────────────────────────
 
 def build_gcode(shape: str = "benchy", layers: int = 30) -> tuple:
-    """
-    Returns (gcode_str, waypoints_list).
-    waypoints_list: [{byte, x, y, z, extruding}]
-    byte = cumulative bytes AFTER this G1 line (matches TextEncoder in frontend).
-    """
+    import math
     profile   = get_profile()
     bed       = profile.get("bed", {})
     cx        = bed.get("size_x_mm", 235) / 2
@@ -110,8 +154,8 @@ def build_gcode(shape: str = "benchy", layers: int = 30) -> tuple:
     bed_temp  = int(profile.get("bed_heater", {}).get("max_temp_c",  110) * 0.55)
 
     lines = [
-        f"; Indus3D Sim — {shape.upper()}  ({layers} layers)",
-        f"; Bed {bed.get('size_x_mm')}×{bed.get('size_y_mm')} mm",
+        f"; Indus3D Sim - {shape.upper()}  ({layers} layers)",
+        f"; Bed {bed.get('size_x_mm')}x{bed.get('size_y_mm')} mm",
         f"; Layer height: {layer_h} mm",
         "G90 ; Absolute",
         "M82 ; Extruder absolute",
@@ -126,21 +170,55 @@ def build_gcode(shape: str = "benchy", layers: int = 30) -> tuple:
     ]
 
     e          = 0.0
-    e_per_mm   = 0.045
+    nozzle_d   = profile.get("hotend", {}).get("nozzle_diameter_mm", 0.4)
+    filament_d = profile.get("hotend", {}).get("filament_diameter_mm", 1.75)
+    line_w     = profile.get("print", {}).get("line_width_mm", nozzle_d)
+    bead_area  = max(0.001, (line_w - layer_h) * layer_h + math.pi * (layer_h / 2) ** 2)
+    filament_area = math.pi * (filament_d / 2) ** 2
+    e_per_mm   = bead_area / filament_area
     prev_x     = cx
     prev_y     = cy
 
-    gen = _benchy_moves(cx, cy, layers, layer_h) if shape == "benchy" \
-          else _cube_moves(cx, cy, layers, layer_h)
+    offsets = [(0, 0, "Benchy")] if shape != "multi_benchy" else [(-40, -20, "Benchy_1"), (0, 30, "Benchy_2"), (40, -10, "Benchy_3")]
+    base_shape = "benchy" if "benchy" in shape else shape
 
-    for mx, my, mz, extruding in gen:
-        if extruding:
-            dist = math.sqrt((mx - prev_x)**2 + (my - prev_y)**2)
-            e   += dist * e_per_mm
-            lines.append(f"G1 X{mx:.3f} Y{my:.3f} Z{mz:.3f} E{e:.4f} F1500")
-        else:
-            lines.append(f"G1 X{mx:.3f} Y{my:.3f} Z{mz:.3f} F6000")
-        prev_x, prev_y = mx, my
+    # Pre-declare objects for Exclude Objects
+    if shape == "multi_benchy":
+        for ox, oy, name in offsets:
+            lines.append(f"EXCLUDE_OBJECT_DEFINE NAME={name} CENTER={cx+ox},{cy+oy} POLYGON=[[{cx+ox-20},{cy+oy-20}],[{cx+ox+20},{cy+oy-20}],[{cx+ox+20},{cy+oy+20}],[{cx+ox-20},{cy+oy+20}]]")
+
+    # Generate all moves grouped by layer and object
+    # A generator yields x, y, z, extruding. We can group by Z.
+    from collections import defaultdict
+    obj_layers = {name: defaultdict(list) for _, _, name in offsets}
+
+    for ox, oy, name in offsets:
+        gen = _benchy_moves(cx + ox, cy + oy, layers, layer_h) if base_shape == "benchy" else _cube_moves(cx + ox, cy + oy, layers, layer_h)
+        for mx, my, mz, extruding in gen:
+            obj_layers[name][mz].append((mx, my, mz, extruding))
+
+    # Gather all unique Z heights sorted
+    all_z = sorted(set(z for name in obj_layers for z in obj_layers[name]))
+
+    for z in all_z:
+        for ox, oy, name in offsets:
+            pts = obj_layers[name].get(z, [])
+            if not pts: continue
+
+            if shape == "multi_benchy":
+                lines.append(f"EXCLUDE_OBJECT_START NAME={name}")
+
+            for mx, my, mz, extruding in pts:
+                if extruding:
+                    dist = math.sqrt((mx - prev_x)**2 + (my - prev_y)**2)
+                    e   += dist * e_per_mm
+                    lines.append(f"G1 X{mx:.3f} Y{my:.3f} Z{mz:.3f} E{e:.4f} F1500")
+                else:
+                    lines.append(f"G1 X{mx:.3f} Y{my:.3f} Z{mz:.3f} F6000")
+                prev_x, prev_y = mx, my
+
+            if shape == "multi_benchy":
+                lines.append(f"EXCLUDE_OBJECT_END NAME={name}")
 
     lines += [
         "M104 S0",
@@ -150,17 +228,18 @@ def build_gcode(shape: str = "benchy", layers: int = 30) -> tuple:
         "; END",
     ]
 
-    # ── Build string and byte-accurate waypoint list ──────────────────────────
-    # Every line gets \n, matching how TextEncoder counts in the frontend.
     gcode_str  = "\n".join(lines) + "\n"
     waypoints  = []
     byte       = 0
 
     import re
+    current_obj = None
     for i, line in enumerate(lines):
-        # Match frontend: all lines except last get +\n, last gets nothing
-        # But since gcode_str ends with \n (the `+"\n"`), all lines effectively
-        # have a newline. We replicate that here.
+        if line.startswith("EXCLUDE_OBJECT_START"):
+            current_obj = line.split("NAME=")[1].strip()
+        elif line.startswith("EXCLUDE_OBJECT_END"):
+            current_obj = None
+
         line_bytes = len((line + "\n").encode("utf-8"))
 
         if line.startswith("G1") and "X" in line:
@@ -170,11 +249,12 @@ def build_gcode(shape: str = "benchy", layers: int = 30) -> tuple:
             me_ = re.search(r"E([0-9.-]+)", line)
             if mx_ and my_ and mz_:
                 waypoints.append({
-                    "byte":      byte + line_bytes,   # byte AFTER this line
+                    "byte":      byte + line_bytes,
                     "x":         float(mx_.group(1)),
                     "y":         float(my_.group(1)),
                     "z":         float(mz_.group(1)),
                     "extruding": me_ is not None,
+                    "object":    current_obj,
                 })
         byte += line_bytes
 
@@ -189,6 +269,6 @@ def get_shape_gcode(shape: str = "benchy", layers: int = 30) -> tuple:
     if key not in _cache:
         _cache[key] = build_gcode(shape, layers)
         gs, wps = _cache[key]
-        print(f"✅ gcode_shapes: {shape} {layers}L — "
+        logging.info(f"✅ gcode_shapes: {shape} {layers}L — "
               f"{len(wps)} waypoints, {len(gs)} bytes")
     return _cache[key]

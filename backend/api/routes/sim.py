@@ -6,6 +6,7 @@ Key addition: /api/sim/gcode_file — serves the synthetic G-code
 so the GCodeVisualizer can parse and render it exactly like a real file.
 """
 
+import logging
 from flask import Blueprint, jsonify, Response, request
 
 sim_bp = Blueprint("sim", __name__)
@@ -89,7 +90,7 @@ def gcode_file():
 
     # Otherwise build on-demand from query params
     shape  = request.args.get("shape",  "benchy")
-    layers = int(request.args.get("layers", "40"))
+    layers = int(request.args.get("layers", "240"))
 
     try:
         from workers.gcode_shapes import get_shape_gcode
