@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 digital_twin/quality_controller.py
 ------------------------------------
@@ -47,9 +49,10 @@ All corrections are logged and exposed via .corrections dict.
 """
 
 import logging
+
 import time
 import math
-from config.loader import get_profile
+from config.loader import get_overrides_path, get_profile
 
 # ── Safe command ranges ───────────────────────────────────────────────────────
 FLOW_MIN        = 85      # M221 lower bound (%)
@@ -75,6 +78,7 @@ SINTERING_INTERVAL   = 10.0   # Seconds between adhesion/fan sintering checks
 GRAETZ_INTERVAL      = 5.0    # Seconds between Graetz undercooling temp checks
 ROUGHNESS_INTERVAL   = 15.0   # Seconds between surface Ra / perimeter speed checks
 WARPAGE_INTERVAL     = 5.0    # Seconds between warpage checks
+THERMAL_CLOG_INTERVAL = 5.0    # Seconds between thermodynamic PWM clog checks
 
 SINTERING_D_H_WARN   = 0.95   # D_h below this → trim fan to improve sintering
 SINTERING_FAN_TRIM   = 0.30   # Fraction of current fan to subtract (max 30%)
@@ -121,6 +125,9 @@ class QualityController:
         self._last_graetz_t  = 0.0
         self._last_roughness_t = 0.0
         self._last_warpage_t = 0.0
+        self._last_thermal_clog_t = 0.0
+        self._last_autoz_t = 0.0
+        self._cumulative_autoz_trim = 0.0
         self._temp_err_int = 0.0
         self._z_err_int = 0.0
         self._last_layer_z = 0.0
@@ -153,7 +160,8 @@ class QualityController:
             "adhesion_score":  1.0,    # D_h sintering healing degree (0–1)
             "undercooling_c":  0.0,    # Graetz-driven nozzle exit ΔT (°C)
             "warpage_mm":      0.0,    # Compliance observer warpage height (mm)
-            "nozzle_status":   "NORMAL",  # NORMAL | CLOG_WARNING | STRIPPING_WARNING
+            "nozzle_status":   "NORMAL",  # NORMAL | CLOG_WARNING | STRIPPING_WARNING | DUAL_CLOG_WARNING
+            "thermal_ratio":   1.0,       # thermodynamic m_dot ratio (1.0 = healthy)
             "ra_predicted_um": 0.0,    # Predicted surface roughness Ra (µm)
             "zeta":            0.08,   # Damping ratio from TVIST shaper model
             # ── System ─────────────────────────────────────────────────────
@@ -195,7 +203,7 @@ class QualityController:
         except Exception:
             pass
 
-    def update(self, snap: dict, kin: dict, thm: dict, ext: dict) -> list:
+    def update(self, snap: dict, kin: dict, thm: dict, ext: dict, autoz: dict | None = None) -> list:
         """
         Call on every telemetry tick during printing.
         Returns a list of G-code strings to send this tick (may be empty).
@@ -235,7 +243,7 @@ class QualityController:
             commands.append(shaper_cmd)
 
         # ── 4. Dynamic Control Models (PA, Temp, Fan, Accel, Z) ──────────────
-        dynamic_cmds = self._dynamic_params(ext, snap, thm, kin, now)
+        dynamic_cmds = self._dynamic_params(ext, snap, thm, kin, now, autoz=autoz)
         if dynamic_cmds:
             commands.extend(dynamic_cmds)
 
@@ -258,6 +266,11 @@ class QualityController:
         warpage_cmd = self._warpage_control(ext, snap, kin, now)
         if warpage_cmd:
             commands.append(warpage_cmd)
+
+        # ── 9. Thermodynamic PWM clog observer (dual-evidence with TMC current) ──
+        thermal_clog_cmd = self._thermal_clog_control(ext, snap, now)
+        if thermal_clog_cmd:
+            commands.append(thermal_clog_cmd)
 
         return commands
 
@@ -401,9 +414,7 @@ class QualityController:
             self._kinematics = profile.get("kinematics", "cartesian")
 
             # Read from indus_overrides.cfg
-            cfg_path = os.path.join(
-                os.path.dirname(__file__), "..", "config", "indus_overrides.cfg"
-            )
+            cfg_path = get_overrides_path()
             cfg = configparser.ConfigParser()
             cfg.optionxform = str
             cfg.read(cfg_path)
@@ -445,7 +456,7 @@ class QualityController:
 
 
     # ── Dynamic Mathematical Models ───────────────────────────────────────────
-    def _dynamic_params(self, ext: dict, snap: dict, thm: dict, kin: dict, now: float) -> list:
+    def _dynamic_params(self, ext: dict, snap: dict, thm: dict, kin: dict, now: float, autoz: dict | None = None) -> list:
         commands = []
         dt = 5.0
         # Run every 5 seconds to avoid spamming commands
@@ -569,8 +580,22 @@ class QualityController:
         chamber_temp = snap.get("chamber_temp", 25.0)
         thermal_z = control_models.calc_z_offset(max(0, bed_temp - 60.0), max(0, chamber_temp - 25.0))
 
-        # Combine thermal expansion + closed-loop layer error correction
-        desired_total_z = round(thermal_z - self._z_err_int, 3)
+        # Auto-Z First-Layer Tribo-Acoustic Bed Friction & Adhesion trimming
+        # Actively adjusts nozzle-to-bed distance during layer 1 based on accelerometer HFFI
+        autoz_trim = 0.0
+        if autoz and z_height <= 0.35 and (now - self._last_autoz_t >= 2.0):
+            regime = autoz.get("regime", "optimal")
+            recommended = autoz.get("recommended_trim", 0.0)
+            if regime in ("rubbing", "under_squish") and abs(recommended) > 0.005:
+                # Limit cumulative trim to +/- 0.08 mm to guarantee physical safety
+                new_cum = round(self._cumulative_autoz_trim + recommended, 3)
+                if -0.08 <= new_cum <= 0.08:
+                    autoz_trim = recommended
+                    self._cumulative_autoz_trim = new_cum
+                    self._last_autoz_t = now
+
+        # Combine thermal expansion + closed-loop layer error correction + Auto-Z friction trim
+        desired_total_z = round(thermal_z - self._z_err_int + self._cumulative_autoz_trim, 3)
         cur_offset = self._z_offset_cmd if self._z_offset_cmd is not None else 0.0
         desired_adj = round(desired_total_z - cur_offset, 3)
 
@@ -584,8 +609,12 @@ class QualityController:
             new_total = round(cur_offset + safe_adj, 3)
             self._z_offset_cmd = new_total
             self.active["z_offset"] = new_total
-            commands.append(f"SET_GCODE_OFFSET Z_ADJUST={safe_adj} MOVE=0")
-            self._log("z_offset", new_total, f"adj={safe_adj:+.3f} (thermal + closed-loop)")
+            commands.append(f"SET_GCODE_OFFSET Z_ADJUST={safe_adj} MOVE=1")
+            reason = f"adj={safe_adj:+.3f} (thermal + closed-loop"
+            if autoz_trim != 0.0:
+                reason += f" + auto_z={autoz_trim:+.3f} HFFI={autoz.get('hffi', 0.0):.2f}"
+            reason += ")"
+            self._log("z_offset", new_total, reason)
 
         # 5. Dynamic Velocity & Jerk (SCV) with Kinematic Models
         new_v = control_models.calc_dynamic_velocity(300.0, ext.get("max_volumetric_flow", 24.0), bead_area, z_height)
@@ -885,6 +914,83 @@ class QualityController:
             f"warpage={warpage_mm:.3f}mm > {WARPAGE_THRESHOLD_MM}mm → Z-hop"
         )
         return "G91\nG1 Z0.3 F600\nG90"
+
+    # ── Thermodynamic PWM clog observer ───────────────────────────────────────
+    def _thermal_clog_control(self, ext: dict, snap: dict, now: float):
+        """
+        Dual-evidence nozzle clog detection using heater PWM energy balance.
+
+        Complements the existing TMC current-ratio detection (_dynamic_params).
+        A clog is escalated to DUAL_CLOG_WARNING only when BOTH the
+        thermodynamic observer AND the TMC current observer flag a clog
+        simultaneously — greatly reducing false positives.
+
+        Physics: calc_thermodynamic_mass_flow() (Group O, control_models.py)
+            Q_melt = Q_heater - Q_loss
+            m_dot_thermal = Q_melt / (c_p * ΔT + Δh_fusion)
+            clog_suspected if m_dot_thermal / m_dot_cmd < 0.45
+        """
+        if now - self._last_thermal_clog_t < THERMAL_CLOG_INTERVAL:
+            return None
+        self._last_thermal_clog_t = now
+
+        ext_pwm     = snap.get("ext_pwm", 0.0)          # 0.0–1.0 Moonraker extruder.power
+        t_nozzle    = snap.get("ext_temp", 25.0)
+        t_ambient   = float(self._profile.get("t_ambient_c", 25.0))
+        heater_w    = float(self._profile.get("heater_rated_w", 40.0))
+        vol_flow    = ext.get("expected_flow_mm3_s", 0.0)
+
+        # Only check during active extrusion
+        if not ext.get("is_extruding", False) or vol_flow < 1.0 or ext_pwm <= 0.0:
+            return None
+
+        m_dot, clog_thermal, thermal_ratio = control_models.calc_thermodynamic_mass_flow(
+            extruder_power_frac=ext_pwm,
+            heater_rated_w=heater_w,
+            t_nozzle_c=t_nozzle,
+            t_ambient_c=t_ambient,
+            volumetric_flow_cmd_mm3_s=vol_flow,
+        )
+
+        # Update telemetry — always expose thermal ratio for dashboard
+        self.active["thermal_ratio"] = thermal_ratio
+
+        if not clog_thermal:
+            return None
+
+        # Dual-evidence gate: only escalate if TMC current also flagged clog
+        tmc_nozzle_status = self.active.get("nozzle_status", "NORMAL")
+        if tmc_nozzle_status != "CLOG_WARNING":
+            # Single-source thermal clog — log a warning but don't pause
+            self._log("thermal_clog_warn", thermal_ratio,
+                      f"thermal_ratio={thermal_ratio:.2f} (TMC not alarmed — monitoring)")
+            return None
+
+        # Both observers agree — high-confidence clog → pause print
+        self.active["nozzle_status"] = "DUAL_CLOG_WARNING"
+        self._log("dual_clog_detected", thermal_ratio,
+                  f"thermal_ratio={thermal_ratio:.2f} + TMC CLOG_WARNING → PAUSE")
+
+        try:
+            import requests
+            from config.settings import settings
+            from core.alert_actions import _log_action, _flash_led_for_alert
+            from core.notifications import notify
+            import time as _time
+            requests.post(f"{settings.moonraker_url}/printer/print/pause", timeout=5)
+            description = (
+                f"DUAL-EVIDENCE CLOG: thermal_ratio={thermal_ratio:.2f} "
+                f"(PWM={ext_pwm:.2f}, m_dot_est={m_dot*1e6:.2f} µg/s) "
+                f"+ TMC current alarm. Print paused."
+            )
+            _log_action({"timestamp": _time.time(), "alert_id": "dual_clog",
+                         "gcode": "PAUSE", "description": description, "status": "executed"})
+            notify(f"⚠️ Indus3D: {description}")
+            _flash_led_for_alert("critical", restore_key="paused")
+        except Exception:
+            pass
+
+        return None
 
 
 # Module-level singleton

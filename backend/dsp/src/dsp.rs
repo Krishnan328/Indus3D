@@ -1,12 +1,17 @@
 use rustfft::{num_complex::Complex, FftPlanner};
+use serde::Serialize;
 
-pub struct DspProcessor {
-    planner: FftPlanner<f32>,
-    window_size: usize,
-    sample_rate: f32,
+#[derive(Debug, Clone, Serialize)]
+pub struct AutoZMetrics {
+    pub is_contact: bool,
+    pub hffi: f32,
+    pub peak_jerk: f32,
+    pub kurtosis: f32,
+    pub regime: String,
+    pub recommended_trim: f32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DspResult {
     pub peak_hz: f32,
     pub max_magnitude: f32,
@@ -16,6 +21,14 @@ pub struct DspResult {
     pub estimated_stiffness: f32,
     pub estimated_mass: f32,
     pub torque_ripple: f32,
+    // Auto-Z and First Layer Bed Adhesion / Friction
+    pub auto_z: AutoZMetrics,
+}
+
+pub struct DspProcessor {
+    planner: FftPlanner<f32>,
+    window_size: usize,
+    sample_rate: f32,
 }
 
 impl DspProcessor {
@@ -30,10 +43,35 @@ impl DspProcessor {
     pub fn process_window(&mut self, data: &[f32]) -> DspResult {
         let n = data.len();
         if n == 0 {
-            return DspResult { peak_hz: 0.0, max_magnitude: 0.0, kurtosis: 0.0, rms: 0.0, estimated_stiffness: 0.0, estimated_mass: 0.0, torque_ripple: 0.0 };
+            return DspResult {
+                peak_hz: 0.0,
+                max_magnitude: 0.0,
+                kurtosis: 0.0,
+                rms: 0.0,
+                estimated_stiffness: 0.0,
+                estimated_mass: 0.0,
+                torque_ripple: 0.0,
+                auto_z: AutoZMetrics {
+                    is_contact: false,
+                    hffi: 0.0,
+                    peak_jerk: 0.0,
+                    kurtosis: 0.0,
+                    regime: "idle".to_string(),
+                    recommended_trim: 0.0,
+                },
+            };
         }
 
-        // 1. Calculate RMS and Kurtosis
+        // 1. Time-Domain Jerk (derivative of acceleration) & statistical moments
+        let dt = 1.0 / self.sample_rate;
+        let mut peak_jerk = 0.0f32;
+        for i in 1..n {
+            let j = (data[i] - data[i - 1]).abs() / dt;
+            if j > peak_jerk {
+                peak_jerk = j;
+            }
+        }
+
         let mut sum = 0.0;
         let mut sum_sq = 0.0;
         for &val in data {
@@ -42,7 +80,7 @@ impl DspProcessor {
         }
         let mean = sum / n as f32;
         let variance = (sum_sq / n as f32) - (mean * mean);
-        let rms = variance.sqrt();
+        let rms = variance.max(0.0).sqrt();
 
         let mut m4 = 0.0;
         for &val in data {
@@ -53,7 +91,7 @@ impl DspProcessor {
         m4 /= n as f32;
         let kurtosis = if variance > 1e-6 { m4 / (variance * variance) } else { 0.0 };
 
-        // 2. FFT to find Peak Hz
+        // 2. FFT to find Peak Hz and Spectral Energy Distribution
         // Apply Hanning window
         let mut complex_data: Vec<Complex<f32>> = data
             .iter()
@@ -64,19 +102,31 @@ impl DspProcessor {
             })
             .collect();
 
-        // Pad to window_size if needed, though we expect exact window_size
+        // Pad to window_size if needed
         complex_data.resize(self.window_size, Complex { re: 0.0, im: 0.0 });
 
         let fft = self.planner.plan_fft_forward(self.window_size);
         fft.process(&mut complex_data);
 
-        // Analyze PSD (first half only)
+        // Analyze PSD & Frequency Bands (first half only)
         let mut max_mag = 0.0;
         let mut peak_bin = 0;
         let half = self.window_size / 2;
+        let bin_hz = self.sample_rate / self.window_size as f32;
+
+        let mut low_band_energy = 1e-6f32;    // 20 - 400 Hz: motor step and travel harmonics
+        let mut friction_band_energy = 0.0f32; // 1200 - 1600 Hz: micro-asperity tribo-friction rubbing
 
         for i in 1..half { // skip DC offset at bin 0
             let mag = complex_data[i].norm_sqr();
+            let freq = i as f32 * bin_hz;
+
+            if freq >= 20.0 && freq <= 400.0 {
+                low_band_energy += mag;
+            } else if freq >= 1200.0 && freq <= 1600.0 {
+                friction_band_energy += mag;
+            }
+
             if mag > max_mag {
                 max_mag = mag;
                 peak_bin = i;
@@ -84,6 +134,21 @@ impl DspProcessor {
         }
 
         let peak_hz = (peak_bin as f32 * self.sample_rate) / self.window_size as f32;
+
+        // High-Frequency Friction Index (HFFI)
+        let hffi = friction_band_energy / low_band_energy;
+
+        // Contact detection threshold: Jerk spike > 400 g/s or Kurtosis > 6.0
+        let is_contact = peak_jerk > 400.0 || kurtosis > 6.0;
+
+        // Auto-Z bed adhesion and friction regime classification
+        let (regime, recommended_trim) = if hffi > 0.38 {
+            ("rubbing".to_string(), 0.025)
+        } else if hffi < 0.05 && rms > 0.02 {
+            ("under_squish".to_string(), -0.015)
+        } else {
+            ("optimal".to_string(), 0.0)
+        };
 
         // ── Area 3: 3D Printer Structural Dynamic Equation ─────────────────
         // M * q'' + C * q' + K * q = F_e
@@ -94,11 +159,8 @@ impl DspProcessor {
         let estimated_stiffness = assumed_mass * omega_n * omega_n;
         
         // Stepper Motor Electromagnetic Torque Ripple estimation
-        // Torque ripple often appears at specific harmonics (e.g., 200Hz-400Hz depending on speed)
-        // Here we extract high-frequency noise magnitude as a proxy for ripple
         let mut torque_ripple = 0.0;
         if self.window_size > 10 {
-            // Check higher bins for noise floor
             torque_ripple = (rms * 0.1) * (kurtosis / 3.0); 
         }
 
@@ -110,6 +172,14 @@ impl DspProcessor {
             estimated_stiffness,
             estimated_mass: assumed_mass,
             torque_ripple,
+            auto_z: AutoZMetrics {
+                is_contact,
+                hffi,
+                peak_jerk,
+                kurtosis,
+                regime,
+                recommended_trim,
+            },
         }
     }
 }

@@ -111,9 +111,17 @@ def _read_klipper_cfg(cfg_path: str) -> dict:
                 sections[current] = {}
                 continue
 
-            # Key = value
-            if current is not None and "=" in line:
-                key, _, val = line.partition("=")
+            # Key: value or Key = value
+            if current is not None and (":" in line or "=" in line):
+                colon_idx = line.find(":")
+                eq_idx = line.find("=")
+                if colon_idx != -1 and eq_idx != -1:
+                    sep = ":" if colon_idx < eq_idx else "="
+                elif colon_idx != -1:
+                    sep = ":"
+                else:
+                    sep = "="
+                key, _, val = line.partition(sep)
                 key = key.strip().lower()
                 val = val.split("#")[0].strip()   # strip inline comment
                 sections[current][key] = val
@@ -156,27 +164,36 @@ def build_profile(cfg_path: str,
     max_accel   = _float(pr.get("max_accel", "3000"), 3000.0)
 
     # ── Bed size ──────────────────────────────────────────────────────────────
-    # Prefer [bed_mesh] mesh_min / mesh_max
-    bm          = kc.get("bed_mesh", {})
+    # In Klipper, the physical bed limits and toolhead travel volume are defined by
+    # [stepper_x], [stepper_y], and [stepper_z] position_max/min.
+    # [bed_mesh] mesh_min/mesh_max only defines the probing offset region and must
+    # NOT be used as the physical bed dimensions.
     origin_center = kinematics in ("delta", "polar")
 
-    if bm.get("mesh_max") and bm.get("mesh_min"):
-        try:
-            mesh_max = [float(v) for v in bm["mesh_max"].split(",")]
-            mesh_min = [float(v) for v in bm["mesh_min"].split(",")]
-            bed_x    = mesh_max[0] - mesh_min[0]
-            bed_y    = mesh_max[1] - mesh_min[1]
-        except Exception:
-            bed_x, bed_y = 300.0, 300.0
-    else:
-        # Fallback: stepper position_max
-        sx   = kc.get("stepper_x", {})
-        sy   = kc.get("stepper_y", {})
-        bed_x = _float(sx.get("position_max", "300"), 300.0)
-        bed_y = _float(sy.get("position_max", "300"), 300.0)
+    sx   = kc.get("stepper_x", {})
+    sy   = kc.get("stepper_y", {})
+    sz   = kc.get("stepper_z", {})
 
-    sz    = kc.get("stepper_z", {})
-    bed_z = _float(sz.get("position_max", "400"), 400.0)
+    pos_max_x = _float(sx.get("position_max", "0"), 0.0)
+    pos_min_x = _float(sx.get("position_min", "0"), 0.0)
+    pos_max_y = _float(sy.get("position_max", "0"), 0.0)
+    pos_min_y = _float(sy.get("position_min", "0"), 0.0)
+    pos_max_z = _float(sz.get("position_max", "0"), 0.0)
+
+    if pos_max_x > 0:
+        bed_x = round(pos_max_x - pos_min_x, 1) if pos_max_x > pos_min_x else pos_max_x
+    else:
+        bed_x = 300.0
+
+    if pos_max_y > 0:
+        bed_y = round(pos_max_y - pos_min_y, 1) if pos_max_y > pos_min_y else pos_max_y
+    else:
+        bed_y = 300.0
+
+    if pos_max_z > 0:
+        bed_z = pos_max_z
+    else:
+        bed_z = 400.0
 
     # ── Stepper steps/mm ──────────────────────────────────────────────────────
     sx_r = kc.get("stepper_x", {})

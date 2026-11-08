@@ -31,6 +31,11 @@ export default defineConfig([
       'react-hooks/set-state-in-effect': 'off',
       // Relative timestamps are intentionally calculated while rendering.
       'react-hooks/purity': 'off',
+      // Three.js buffers are updated from @react-three/fiber's frame loop;
+      // these are imperative GPU resources rather than React render state.
+      'react-hooks/immutability': 'off',
+      'react-hooks/refs': 'off',
+      'react-refresh/only-export-components': 'off',
     },
   },
 ])

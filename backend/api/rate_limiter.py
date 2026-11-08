@@ -10,6 +10,7 @@ when the process restarts.
 from __future__ import annotations
 
 from collections import defaultdict
+import ipaddress
 import threading
 import time
 
@@ -19,12 +20,13 @@ from flask import jsonify, request
 # category -> (maximum requests, rolling window in seconds)
 _LIMITS = {
     "login": (5, 5 * 60),
-    "hardware_cmd": (10, 60),
-    "default": (120, 60),
+    "jog": (300, 60),
+    "hardware_cmd": (30, 60),
+    "default": (600, 60),
 }
 _BAN_AFTER_VIOLATIONS = 3
-_VIOLATION_WINDOW_SECONDS = 60 * 60
-_BAN_SECONDS = 24 * 60 * 60
+_VIOLATION_WINDOW_SECONDS = 15 * 60
+_BAN_SECONDS = 5 * 60
 
 # Kept module-level both for a single shared process-wide view and for the
 # focused security tests. Keys are (remote IP, category) for request windows
@@ -40,12 +42,34 @@ def _client_ip() -> str:
     return request.remote_addr or "unknown"
 
 
+def _is_exempt(ip: str) -> bool:
+    """Check if an IP address belongs to localhost, a private LAN, or Tailscale.
+
+    Operators running on their private home network or Tailscale mesh (100.64.0.0/10)
+    must never be locked out of printer motion or file management.
+    """
+    if ip in ("127.0.0.1", "::1", "localhost", "unknown"):
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+        return addr.is_loopback or addr.is_private or addr.is_link_local
+    except ValueError:
+        return False
+
+
 def _category() -> str:
     path = request.path
     if request.method == "POST" and path == "/api/v1/auth/login":
         return "login"
     if request.method == "POST" and (
-        path.startswith("/api/v1/printer/")
+        path.startswith("/api/v1/control/jog")
+        or path.startswith("/api/v1/printer/gcode")
+    ):
+        return "jog"
+    if request.method == "POST" and (
+        (path.startswith("/api/v1/printer/")
+         and not path.startswith("/api/v1/printer/instances")
+         and not path.startswith("/api/v1/printer/files/"))
         or path.startswith("/api/v1/control/")
         or path.startswith("/api/v1/twin/action/")
     ):
@@ -77,11 +101,21 @@ def check_rate_limit(app):
 
         now = time.monotonic()
         ip = _client_ip()
+        exempt = _is_exempt(ip)
         category = _category()
         limit, window = _LIMITS[category]
+        if exempt and category != "login":
+            # Operators on local LAN / loopback have virtually unlimited motion and dashboard polling allowances
+            limit = max(limit, 3000)
 
         with _lock:
-            ban_expires = _bans.get(ip)
+            # Loopback / internal health checks and private LAN IPs are never banned
+            if exempt:
+                _bans.pop(ip, None)
+                ban_expires = None
+            else:
+                ban_expires = _bans.get(ip)
+
             if ban_expires:
                 if ban_expires > now:
                     return jsonify({
@@ -98,11 +132,16 @@ def check_rate_limit(app):
                 recent.append(now)
                 return None
 
-            violations = _prune(_violations[ip], now, _VIOLATION_WINDOW_SECONDS)
-            violations.append(now)
-            _violations[ip] = violations
-            if len(violations) >= _BAN_AFTER_VIOLATIONS:
-                _bans[ip] = now + _BAN_SECONDS
+            # Only track persistent violations and trigger an IP ban for sensitive auth brute-force attempts ('login')
+            # from non-exempt (public/unknown) networks.
+            # Operational requests like jogging, G-code, or telemetry polling receive a 429 response
+            # if they exceed limits, but MUST NOT lock the operator out of their printer interface.
+            if category == "login" and not exempt:
+                violations = _prune(_violations[ip], now, _VIOLATION_WINDOW_SECONDS)
+                violations.append(now)
+                _violations[ip] = violations
+                if len(violations) >= _BAN_AFTER_VIOLATIONS:
+                    _bans[ip] = now + _BAN_SECONDS
 
             retry_after = max(1, int(window - (now - recent[0])))
             return jsonify({

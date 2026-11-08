@@ -4,6 +4,7 @@ import { X, Info, Bell, BellOff, MessageCircle, Send, LogOut, Layout, Server, Ca
 import { useStore, API } from "./store";
 import { useThemeTokens, useIsBrutalist } from "./theme";
 import { ThemeSwitcher } from "./ThemeSwitcher";
+import { getNozzleStyle } from "./Viewport";
 
 function TabButton({ id, icon, label, activeTab, setActiveTab, brutalist }) {
   const isActive = activeTab === id;
@@ -55,6 +56,8 @@ export function SettingsModal({ onClose }) {
   const tele = useStore((s) => s.telemetry);
   const uiPrefs = useStore((s) => s.uiPrefs);
   const setUiPref = useStore((s) => s.setUiPref);
+  const maintenanceConfig = useStore((s) => s.maintenanceConfig) || {};
+  const updateMaintenanceConfig = useStore((s) => s.updateMaintenanceConfig);
 
   useEffect(() => { fetchNotificationStatus(); }, [fetchNotificationStatus]);
 
@@ -222,6 +225,36 @@ export function SettingsModal({ onClose }) {
                     <div>
                       <span className="opacity-50 block text-xs mb-1">Indus3D API</span>
                       <span className="font-mono">v1.0.0 (Port 5001)</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className={`pt-6 ${brutalist ? "border-t-[3px] border-[#111]" : `border-t ${t.border}`}`}>
+                  <h4 className={`mb-3 ${t.label}`}>Toolhead & Nozzle Hardware</h4>
+                  <div className={`p-4 flex flex-col gap-4 text-sm ${borderClass} ${!brutalist && "rounded-lg bg-gray-500/5"}`}>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs">Nozzle Material</span>
+                        <div className="flex items-center gap-1.5 text-xs font-mono">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full inline-block shadow-sm"
+                            style={{ backgroundColor: getNozzleStyle(maintenanceConfig.nozzle_material || "Brass").color }}
+                          />
+                          <span className="opacity-70 text-[11px]">{getNozzleStyle(maintenanceConfig.nozzle_material || "Brass").name}</span>
+                        </div>
+                      </div>
+                      <select
+                        value={maintenanceConfig.nozzle_material || "Brass"}
+                        onChange={(e) => updateMaintenanceConfig({ nozzle_material: e.target.value })}
+                        className={`text-xs p-2 outline-none font-mono ${t.cell}`}
+                      >
+                        {["Brass", "Hardened Steel", "Stainless Steel", "Plated Copper", "Tungsten Carbide", "Ruby-tipped", "Diamond-tipped"].map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] opacity-50 mt-0.5">
+                        Controls the 3D toolhead digital twin shader color and calibrates consumable wear-life counters.
+                      </p>
                     </div>
                   </div>
                 </div>

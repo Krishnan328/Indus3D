@@ -789,3 +789,83 @@ def calc_optimal_perimeter_parameters(
     return round(v_opt, 1), round(t_opt, 1), round(final_ra, 2)
 
 
+# ── Group O: Thermodynamic PWM Mass-Flow Clog Observer ───────────────────────
+# Source Literature:
+#   - WatchingWatches/clog_detection_ml (Moonraker heater-duty-cycle approach)
+#   - Energy balance: Q_in = Q_heater - Q_loss = m_dot * (c_p * ΔT + Δh_fusion)
+#   Reference: Clog Detection via Heater PWM (2024)
+
+def calc_thermodynamic_mass_flow(
+    extruder_power_frac: float,
+    heater_rated_w: float,
+    t_nozzle_c: float,
+    t_ambient_c: float,
+    volumetric_flow_cmd_mm3_s: float,
+    filament_density_kg_m3: float = 1240.0,
+    filament_cp_j_kg_k: float = 1800.0,
+    filament_latent_j_kg: float = 100_000.0,
+    clog_ratio_threshold: float = 0.45,
+    min_flow_cmd_mm3_s: float = 3.0,
+) -> tuple:
+    """
+    Estimates actual mass flow rate from heater PWM duty cycle and nozzle
+    temperature using an energy balance observer.
+
+    Physics (clog_detection_ml energy balance):
+        Q_heater  = extruder_power_frac × heater_rated_w   [W]
+        Q_loss    ≈ h_loss × (T_nozzle − T_ambient)         [W]  (empirical: h_loss ≈ 0.5 W/°C)
+        Q_melt    = Q_heater − Q_loss                        [W]
+        m_dot     = Q_melt / (c_p × ΔT + Δh_fusion)         [kg/s]
+
+    Clog suspected when:
+        - Commanded volumetric flow  >  min_flow_cmd_mm3_s  (actually trying to extrude)
+        - Thermal mass-flow estimate << commanded mass-flow   (heater can't keep up)
+        - ratio = m_dot_thermal / m_dot_commanded  <  clog_ratio_threshold
+
+    Args:
+        extruder_power_frac:       Moonraker extruder.power, range 0.0–1.0
+        heater_rated_w:            Nozzle heater block rated wattage (e.g. 40 W)
+        t_nozzle_c:                Current nozzle temperature [°C]
+        t_ambient_c:               Ambient temperature [°C]
+        volumetric_flow_cmd_mm3_s: Commanded volumetric flow [mm³/s]
+        filament_density_kg_m3:    Filament density (PLA ≈ 1240 kg/m³)
+        filament_cp_j_kg_k:        Specific heat capacity [J/(kg·K)]
+        filament_latent_j_kg:      Latent heat of fusion [J/kg]
+        clog_ratio_threshold:      Thermal/commanded ratio below which clog is flagged
+        min_flow_cmd_mm3_s:        Minimum commanded flow to enable clog check [mm³/s]
+
+    Returns:
+        (m_dot_thermal_kg_s: float, clog_suspected: bool, thermal_ratio: float)
+        - m_dot_thermal_kg_s: Thermally estimated mass flow rate [kg/s]
+        - clog_suspected:     True if thermal evidence suggests a clog
+        - thermal_ratio:      m_dot_thermal / m_dot_commanded  (1.0 = healthy)
+    """
+    if heater_rated_w <= 0.0 or t_nozzle_c <= t_ambient_c:
+        return 0.0, False, 1.0
+
+    # Empirical convective loss coefficient (≈ 0.05 W/°C for standard insulated E3D-style block)
+    H_LOSS_W_PER_C = 0.05
+    delta_t = t_nozzle_c - t_ambient_c
+
+    q_heater = max(0.0, extruder_power_frac) * heater_rated_w
+    q_loss   = H_LOSS_W_PER_C * delta_t
+    q_melt   = max(0.0, q_heater - q_loss)
+
+    # Enthalpy per kg to melt filament from ambient to nozzle temp
+    enthalpy_j_kg = filament_cp_j_kg_k * delta_t + filament_latent_j_kg
+    m_dot_thermal = q_melt / enthalpy_j_kg if enthalpy_j_kg > 0.0 else 0.0
+
+    # Commanded mass flow (mm³/s → m³/s → kg/s)
+    m_dot_cmd = (volumetric_flow_cmd_mm3_s * 1e-9) * filament_density_kg_m3
+
+    clog_suspected = False
+    thermal_ratio  = 1.0
+
+    if m_dot_cmd > (min_flow_cmd_mm3_s * 1e-9 * filament_density_kg_m3) and m_dot_cmd > 0.0:
+        thermal_ratio = min(2.0, m_dot_thermal / m_dot_cmd)
+        clog_suspected = thermal_ratio < clog_ratio_threshold
+
+    return round(m_dot_thermal, 9), clog_suspected, round(thermal_ratio, 3)
+
+
+

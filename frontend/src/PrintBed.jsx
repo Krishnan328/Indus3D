@@ -11,8 +11,8 @@ export function PrintBed() {
   const simMode   = useStore((s) => s.simMode);
   const collision = useStore((s) => s.telemetry?.bed_collision_hazard);
 
-  const bx = (bed?.size_x_mm ?? 300) / 10;
-  const by = (bed?.size_y_mm ?? 300) / 10;
+  const bx = (bed?.size_x_mm ?? 320) / 10;
+  const by = (bed?.size_y_mm ?? 320) / 10;
   const ox = bed?.origin_center ? 0 : bx / 2;
   const oz = bed?.origin_center ? 0 : by / 2;
 
@@ -79,7 +79,7 @@ export function PrintBed() {
 
       return { id: idx, cx, cz, w, d };
     }).filter(Boolean);
-  }, [bed?.bed_exclude_area, by]);
+  }, [bed, by]);
 
   // Printable perimeter line points (Y-flipped to match scene coords)
   const perimeterPoints = useMemo(() => {
@@ -90,7 +90,7 @@ export function PrintBed() {
     // Close the loop
     pts.push(pts[0].clone());
     return pts;
-  }, [bed?.printable_area, by]);
+  }, [bed, by]);
 
   return (
     <group>

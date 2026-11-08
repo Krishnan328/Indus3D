@@ -10,6 +10,7 @@ never calls port 7125 directly.
 
 import logging
 import json
+import math
 import os
 import socket
 import time
@@ -28,6 +29,8 @@ from api.routes.spools import spools_bp
 from api.routes.sim import sim_bp
 from api.routes.printer import printer_bp
 from api.routes.bed import bed_bp
+from api.routes.lab import lab_bp
+from api.routes.calibration_workflow import calibration_workflow_bp
 from api.auth import auth_bp, install_auth_gate, get_or_create_secret_key, auth_required
 
 app  = Flask(__name__)
@@ -73,6 +76,8 @@ app.register_blueprint(sim_bp,      url_prefix="/api/v1/sim")
 app.register_blueprint(spools_bp,   url_prefix="/api/v1/spools")
 app.register_blueprint(printer_bp,  url_prefix="/api/v1/printer")
 app.register_blueprint(bed_bp,      url_prefix="/api/v1/bed")
+app.register_blueprint(lab_bp,      url_prefix="/api/v1/lab")
+app.register_blueprint(calibration_workflow_bp, url_prefix="/api/v1/calibration/workflow")
 app.register_blueprint(auth_bp)
 
 # Session secret + auth gate
@@ -115,7 +120,13 @@ def _worker():
 
 def _printer_is_busy(worker) -> bool:
     """Manual motion and calibration must never interleave with a print."""
-    state = (worker.latest if worker else {}).get("print_state", "standby")
+    if not worker:
+        return False
+    latest = getattr(worker, "latest", None)
+    if isinstance(latest, dict):
+        state = latest.get("print_state", "standby")
+    else:
+        state = getattr(worker, "state", "standby")
     return state in ("printing", "paused")
 
 
@@ -135,6 +146,15 @@ def _run_managed_gcode(script: str):
         params={"script": script}, timeout=10,
     )
     if not res.ok:
+        try:
+            err_json = res.json()
+            if isinstance(err_json, dict) and "error" in err_json:
+                err_val = err_json["error"]
+                if isinstance(err_val, dict) and "message" in err_val:
+                    return {"status": "error", "detail": str(err_val["message"]).split("\n")[0].strip()}
+                return {"status": "error", "detail": str(err_val).split("\n")[0].strip()}
+        except Exception:
+            pass
         return {"status": "error", "detail": res.text[:300]}
     if w and hasattr(w, "live_commands"):
         for line in script.splitlines():
@@ -143,15 +163,44 @@ def _run_managed_gcode(script: str):
     return {"status": "ok", "simulated": False}
 
 
-# ── WebSocket — 10 Hz push ────────────────────────────────────────────────────
+def _clean_moonraker_error(detail: str) -> str:
+    """Extract clean user-readable message from Moonraker JSON error response."""
+    if not detail:
+        return "Command failed in Moonraker/Klipper"
+    try:
+        parsed = json.loads(detail)
+        if isinstance(parsed, dict) and "error" in parsed:
+            err = parsed["error"]
+            if isinstance(err, dict) and "message" in err:
+                return str(err["message"]).split("\n")[0].strip()
+            return str(err).split("\n")[0].strip()
+    except Exception:
+        pass
+    return str(detail).split("\n")[0].strip()
+
+
+# ── WebSocket — real-time push ───────────────────────────────────────────────
 @sock.route("/api/v1/ws/twin")
 def ws_twin(ws):
     logging.info("🔌 WS client connected")
     try:
+        w = _worker()
+        last_sent_ts = 0.0
+        last_sent_time = 0.0
         while True:
-            w = _worker()
+            if w and hasattr(w, "wait_for_telemetry"):
+                w.wait_for_telemetry(timeout=0.04)
+            else:
+                time.sleep(0.04)
             if w and w.latest:
                 sim_state = w.latest.copy()
+                ts = sim_state.get("timestamp") or sim_state.get("last_updated") or 0.0
+                now = time.time()
+                # Always send at least once every 0.3s as a WebSocket heartbeat even if idle
+                if ts == last_sent_ts and (now - last_sent_time < 0.3):
+                    continue
+                last_sent_ts = ts
+                last_sent_time = now
                 if "kinematics" in sim_state:
                     sim_state.update(sim_state.pop("kinematics"))
                 if "thermals" in sim_state:
@@ -159,9 +208,21 @@ def ws_twin(ws):
                 if "extrusion" in sim_state:
                     sim_state.update(sim_state.pop("extrusion"))
                 ws.send(json.dumps(sim_state))
-            time.sleep(0.1)
     except Exception:
         logging.info("🔌 WS client disconnected")
+
+
+@app.errorhandler(400)
+@app.errorhandler(404)
+@app.errorhandler(405)
+@app.errorhandler(500)
+@app.errorhandler(Exception)
+def handle_api_errors(e):
+    if request.path.startswith("/api/"):
+        msg = getattr(e, "description", str(e))
+        code = getattr(e, "code", 500)
+        return jsonify({"error": str(msg)}), code
+    return e
 
 
 # ── Control execute ───────────────────────────────────────────────────────────
@@ -189,10 +250,26 @@ def execute():
             params={"script": gcode},
             timeout=5,
         )
-        # Also add to live_commands feed so terminal shows it
-        if w and hasattr(w, "live_commands"):
-            w.live_commands.append({"text": gcode, "ts": time.time()})
-        return jsonify({"status": "ok" if res.ok else "error"})
+        if not res.ok:
+            err_msg = "Command failed"
+            try:
+                err_data = res.json()
+                if isinstance(err_data, dict) and "error" in err_data:
+                    err_val = err_data["error"]
+                    if isinstance(err_val, dict) and "message" in err_val:
+                        err_msg = str(err_val["message"]).split("\n")[0]
+                    else:
+                        err_msg = str(err_val).split("\n")[0]
+            except Exception:
+                err_msg = res.text[:200]
+            if w and hasattr(w, "live_commands"):
+                w.live_commands.append({"text": f">>> {gcode}", "ts": time.time()})
+                w.live_commands.append({"text": f"!! {err_msg}", "ts": time.time()})
+            return jsonify({"status": "error", "error": err_msg}), 400
+        else:
+            if w and hasattr(w, "live_commands"):
+                w.live_commands.append({"text": f">>> {gcode}", "ts": time.time()})
+            return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 
@@ -220,10 +297,27 @@ def jog_toolhead():
         return jsonify({"error": "Jogging is disabled while a print is active"}), 409
     data = request.get_json(force=True, silent=True) or {}
     try:
-        delta = {axis: float(data.get(axis, 0)) for axis in ("x", "y", "z", "e")}
-        feedrate = float(data.get("feedrate", 3000))
-    except (TypeError, ValueError):
-        return jsonify({"error": "Invalid jog values"}), 400
+        delta = {}
+        for axis in ("x", "y", "z", "e"):
+            raw_v = data.get(axis)
+            if raw_v is None or str(raw_v).strip() == "":
+                delta[axis] = 0.0
+            else:
+                cleaned = str(raw_v).replace("mm", "").strip()
+                val = float(cleaned)
+                if not math.isfinite(val):
+                    raise ValueError(f"Non-finite value for {axis}")
+                delta[axis] = val
+        raw_feed = data.get("feedrate")
+        if raw_feed is None or str(raw_feed).strip() == "":
+            feedrate = 3000.0
+        else:
+            cleaned_feed = str(raw_feed).replace("mm/min", "").strip()
+            feedrate = float(cleaned_feed)
+            if not math.isfinite(feedrate):
+                feedrate = 3000.0
+    except (TypeError, ValueError) as err:
+        return jsonify({"error": f"Invalid jog values: {err}"}), 400
     if not any(delta.values()) or any(abs(value) > 100 for value in delta.values()):
         return jsonify({"error": "Each jog must be non-zero and within ±100 mm"}), 400
     if not 60 <= feedrate <= 12000:
@@ -236,7 +330,61 @@ def jog_toolhead():
             return jsonify({"status": "queued", "simulated": True})
         terms = " ".join(f"{axis.upper()}{value:.3f}" for axis, value in delta.items() if value)
         result = _run_managed_gcode(f"G91\nG1 {terms} F{feedrate:.0f}\nG90")
-        return jsonify(result), (200 if result["status"] != "error" else 502)
+        if result.get("status") == "error":
+            err_msg = _clean_moonraker_error(result.get("detail", ""))
+            return jsonify({"error": err_msg, "status": "error", "detail": err_msg}), 502
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/v1/control/move", methods=["POST"])
+def move_toolhead():
+    """Bounded absolute positioning move (G90 G1 X... Y... Z... F...) for typed toolhead coordinates."""
+    w = _worker()
+    if _printer_is_busy(w):
+        return jsonify({"error": "Moving is disabled while a print is active"}), 409
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        coords = {}
+        for axis in ("x", "y", "z"):
+            raw_v = data.get(axis)
+            if raw_v is not None and str(raw_v).strip() != "":
+                cleaned = str(raw_v).replace("mm", "").strip()
+                val = float(cleaned)
+                if not math.isfinite(val):
+                    raise ValueError(f"Non-finite value for {axis}")
+                coords[axis] = val
+        raw_feed = data.get("feedrate")
+        if raw_feed is None or str(raw_feed).strip() == "":
+            feedrate = 3000.0
+        else:
+            cleaned_feed = str(raw_feed).replace("mm/min", "").strip()
+            feedrate = float(cleaned_feed)
+            if not math.isfinite(feedrate):
+                feedrate = 3000.0
+    except (TypeError, ValueError) as err:
+        return jsonify({"error": f"Invalid coordinate values: {err}"}), 400
+
+    if not coords:
+        return jsonify({"error": "At least one axis (X, Y, or Z) must be specified"}), 400
+
+    if not 60 <= feedrate <= 12000:
+        return jsonify({"error": "Feedrate must be between 60 and 12000 mm/min"}), 400
+
+    try:
+        if w and hasattr(w, "move_to"):
+            allowed = w.move_to(**coords)
+            if allowed is False:
+                return jsonify({"error": "Move blocked by bed safety (exclusion zone or out-of-bounds)"}), 409
+            return jsonify({"status": "queued", "simulated": True})
+
+        terms = " ".join(f"{axis.upper()}{value:.3f}" for axis, value in coords.items())
+        result = _run_managed_gcode(f"G90\nG1 {terms} F{feedrate:.0f}")
+        if result.get("status") == "error":
+            err_msg = _clean_moonraker_error(result.get("detail", ""))
+            return jsonify({"error": err_msg, "status": "error", "detail": err_msg}), 502
+        return jsonify(result), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 
@@ -390,7 +538,13 @@ def calibration_status():
 
 @app.route("/api/v1/calibration/run", methods=["POST"])
 def run_calibration_step():
-    """Safety-gated Klipper calibration actions; no arbitrary G-code input."""
+    """Legacy direct executor is intentionally disabled in favour of workflow plans."""
+    return jsonify({
+        "error": "Direct calibration execution is disabled. Create a guarded workflow session and request a review-only command plan instead.",
+        "workflow": "/api/v1/calibration/workflow/status",
+    }), 410
+
+    # Kept below temporarily as documented legacy behaviour; it is unreachable.
     w = _worker()
     if _printer_is_busy(w):
         return jsonify({"error": "Calibration cannot run during an active print"}), 409
@@ -430,7 +584,13 @@ def run_calibration_step():
 
 @app.route("/api/v1/calibration/flow-sample", methods=["POST"])
 def upload_flow_sample():
-    """Upload, but deliberately do not start, the calibration print."""
+    """Legacy uploader is disabled; use a review-only artifact from the lab toolkit."""
+    return jsonify({
+        "error": "Automatic calibration uploads are disabled. Generate, validate, and manually approve a review-only flow artifact instead.",
+        "toolkit": "tools/indus3d_lab/calibration",
+    }), 410
+
+    # Kept below temporarily as documented legacy behaviour; it is unreachable.
     w = _worker()
     gcode = _flow_sample_gcode()
     if w and hasattr(w, "shape"):
@@ -450,7 +610,13 @@ def upload_flow_sample():
 
 @app.route("/api/v1/calibration/pa-test", methods=["POST"])
 def upload_pa_test():
-    """Generate and upload a PA calibration test pattern."""
+    """Legacy uploader is disabled; use a review-only, manually approved artifact."""
+    return jsonify({
+        "error": "Automatic calibration uploads are disabled. Generate and approve a review-only pressure-advance artifact instead.",
+        "toolkit": "tools/indus3d_lab/calibration",
+    }), 410
+
+    # Kept below temporarily as documented legacy behaviour; it is unreachable.
     w = _worker()
     data = request.get_json(force=True, silent=True) or {}
     pa_start = float(data.get("pa_start", 0.0))
@@ -716,8 +882,14 @@ def get_telemetry():
         "x":              d.get("cmd_x", 0),
         "y":              d.get("cmd_y", 0),
         "z":              d.get("cmd_z", 0),
+        "live_x":         d.get("live_x", d.get("cmd_x", 0)),
+        "live_y":         d.get("live_y", d.get("cmd_y", 0)),
+        "live_z":         d.get("live_z", d.get("cmd_z", 0)),
         "extTemp":        d.get("ext_temp", 0),
         "bedTemp":        d.get("bed_temp", 0),
+        "extTarget":      d.get("ext_target", 0),
+        "bedTarget":      d.get("bed_target", 0),
+        "fan_speed":      d.get("fan_speed", 0),
         "state":          d.get("print_state", "unknown"),
         "filename":       d.get("filename", ""),
         "file_position":  d.get("file_position", 0),
@@ -726,6 +898,17 @@ def get_telemetry():
         "print_duration": d.get("print_duration", 0),
         "speed_factor":   d.get("speed_factor", 100),
         "flow_factor":    d.get("flow_factor", 100),
+        "online":         d.get("online", False),
+        "klippy_state":   d.get("klippy_state", "ready"),
+        "klippy_connected": d.get("klippy_connected", True),
+        "state_message":  d.get("state_message", ""),
+        "vibration":      d.get("vibration", {}),
+        "device_temperatures": d.get("device_temperatures", {}),
+        "chamber":         d.get("chamber", {}),
+        "bed_accel":       d.get("bed_accel", {}),
+        "filament_sensor": d.get("filament_sensor", {}),
+        "extrusion":       d.get("extrusion", {}),
+        "power":          d.get("power", {}),
     })
 
 
@@ -762,7 +945,10 @@ def power():
     w = _worker()
     if w and hasattr(w, "power"):
         return jsonify(w.power)
-    return jsonify({"voltage": 0.0, "current": 0.0, "power": 0.0})
+    if w and hasattr(w, "latest") and isinstance(w.latest, dict) and "power" in w.latest:
+        return jsonify(w.latest["power"])
+    from services.pzem_monitor import pzem_monitor
+    return jsonify(pzem_monitor.read())
 
 
 from db.models import get_connection
@@ -831,9 +1017,18 @@ def maintenance():
     w = _worker()
     if w and type(w).__name__ == "SimulatedTelemetryWorker":
         # Simulator uses its own in-memory state
+        try:
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute("SELECT key, value FROM printer_config")
+            config = dict(c.fetchall())
+            conn.close()
+        except Exception:
+            config = {"nozzle_material": "Brass", "filament_type": "Standard", "structural_material": "PETG"}
         return jsonify({
             "hints": getattr(w, "maintenance_hints", []),
-            "status": getattr(w, "maintenance_status", [])
+            "status": getattr(w, "maintenance_status", []),
+            "config": config,
         })
     
     # Real telemetry reads from SQLite
@@ -1006,20 +1201,63 @@ def update_maintenance_config():
 
 @app.route("/api/v1/reports/<path:filename>", methods=["GET"])
 def download_report(filename):
+    import os
+    from flask import send_from_directory
     reports_dir = os.path.join(os.path.dirname(__file__), "..", "reports")
     return send_from_directory(reports_dir, filename)
+
+
+@app.route("/api/v1/system/logs/<service>", methods=["GET"])
+def download_system_log(service):
+    """Download system diagnostic logs (klipper or moonraker)."""
+    import subprocess
+    clean_srv = service.lower().strip()
+    if clean_srv in ("klipper", "klippy"):
+        k_path = "/var/lib/moonraker/logs/klippy.log"
+        if os.path.exists(k_path):
+            try:
+                with open(k_path, "r", errors="replace") as f:
+                    content = f.read()
+                return Response(content, mimetype="text/plain", headers={"Content-Disposition": 'attachment; filename="klippy.log"'})
+            except Exception:
+                pass
+        try:
+            out = subprocess.check_output(["journalctl", "-u", "klipper", "-n", "3000", "--no-pager"], text=True)
+            return Response(out, mimetype="text/plain", headers={"Content-Disposition": 'attachment; filename="klippy.log"'})
+        except Exception as e:
+            return jsonify({"error": f"Failed to retrieve Klipper log: {e}"}), 500
+
+    elif clean_srv in ("moonraker", "server"):
+        m_path = "/var/lib/moonraker/logs/moonraker.log"
+        if os.path.exists(m_path):
+            try:
+                with open(m_path, "r", errors="replace") as f:
+                    content = f.read()
+                return Response(content, mimetype="text/plain", headers={"Content-Disposition": 'attachment; filename="moonraker.log"'})
+            except Exception:
+                pass
+        try:
+            out = subprocess.check_output(["journalctl", "-u", "moonraker", "-n", "3000", "--no-pager"], text=True)
+            return Response(out, mimetype="text/plain", headers={"Content-Disposition": 'attachment; filename="moonraker.log"'})
+        except Exception as e:
+            return jsonify({"error": f"Failed to retrieve Moonraker log: {e}"}), 500
+
+    return jsonify({"error": "Unknown log service"}), 404
+
 
 # ── Frontend static file serving ─────────────────────────────────────────────
 # When Indus3D is installed on a Raspberry Pi or Linux SBC, the built React SPA
 # is located at frontend/dist. Flask serves index.html and static assets directly,
 # eliminating the need to run a separate Node/Vite development server in production.
-DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist"))
+DIST_DIR = os.environ.get("INDUS3D_FRONTEND_DIR") or os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist")
+)
 
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_frontend(path):
     # Do not intercept API, docs, or WebSocket endpoints
-    if path == "ws" or path.startswith("api/") or path.startswith("flasgger_static"):
+    if path == "ws" or path.startswith("ws/") or path.startswith("api/") or path.startswith("flasgger_static"):
         return jsonify({"error": "Not found"}), 404
 
     if os.path.exists(DIST_DIR):

@@ -8,7 +8,9 @@ def client():
     with app.test_client() as client:
         yield client
 
-def test_frontend_fallback_when_dist_empty(client):
+def test_frontend_fallback_when_dist_empty(client, monkeypatch):
+    import api.server
+    monkeypatch.setattr(api.server, "DIST_DIR", "/nonexistent_path_for_testing")
     resp = client.get("/")
     assert resp.status_code == 200
     # In testing environment where frontend/dist isn't built, returns status json

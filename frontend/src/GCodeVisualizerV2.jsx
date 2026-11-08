@@ -28,10 +28,11 @@ export function GCodeVisualizerV2() {
   const retryRef = useRef(null);
   const groupRef = useRef(null);
   const linesRef = useRef(null);
+  const ghostLinesRef = useRef(null);
   const travelLinesRef = useRef(null);
   const frozenObjectsRef = useRef({});
 
-  const bedY = (bed.size_y_mm ?? 300) / 10;
+  const bedY = (bed.size_y_mm ?? 320) / 10;
 
   // 1. Fetch and Parse GCode
   useEffect(() => {
@@ -210,11 +211,26 @@ export function GCodeVisualizerV2() {
     const group = groupRef.current;
     if (!group) return;
     
-    const mat = new THREE.LineBasicMaterial({ color: 0x06b6d4, transparent: true, opacity: 0.6 });
+    // Ghost preview: translucent silhouette of the entire object
+    const ghostMat = new THREE.LineBasicMaterial({
+      color: 0x64748b, // slate-500
+      transparent: true,
+      opacity: 0.22,
+      depthWrite: false,
+    });
+    const ghostGeom = new THREE.BufferGeometry();
+    const ghostLines = new THREE.LineSegments(ghostGeom, ghostMat);
+    ghostLines.frustumCulled = false;
+    ghostLines.renderOrder = 1;
+    group.add(ghostLines);
+    ghostLinesRef.current = ghostLines;
+
+    // Printed lines: vibrant cyan (or height map)
+    const mat = new THREE.LineBasicMaterial({ color: 0x06b6d4, transparent: true, opacity: 0.85, depthWrite: false });
     const geom = new THREE.BufferGeometry();
     const lines = new THREE.LineSegments(geom, mat);
     lines.frustumCulled = false;
-    
+    lines.renderOrder = 2;
     group.add(lines);
     linesRef.current = lines;
 
@@ -232,12 +248,16 @@ export function GCodeVisualizerV2() {
 
     return () => {
       group.remove(lines);
-      group.remove(travelLines);
+      if (ghostLinesRef.current) group.remove(ghostLinesRef.current);
+      if (travelLinesRef.current) group.remove(travelLinesRef.current);
       geom.dispose();
       mat.dispose();
+      ghostGeom.dispose();
+      ghostMat.dispose();
       travelGeom.dispose();
       travelMat.dispose();
       linesRef.current = null;
+      ghostLinesRef.current = null;
       travelLinesRef.current = null;
     };
   }, []);
@@ -253,6 +273,7 @@ export function GCodeVisualizerV2() {
     if (!allPaths || allPaths.length === 0) {
       lines.geometry.setDrawRange(0, 0);
       lines.userData.bytes = null;
+      if (ghostLinesRef.current) ghostLinesRef.current.geometry.setDrawRange(0, 0);
       return;
     }
 
@@ -282,6 +303,7 @@ export function GCodeVisualizerV2() {
     if (count === 0) {
       lines.geometry.setDrawRange(0, 0);
       lines.userData.bytes = null;
+      if (ghostLinesRef.current) ghostLinesRef.current.geometry.setDrawRange(0, 0);
       return;
     }
 
@@ -346,6 +368,12 @@ export function GCodeVisualizerV2() {
     }
     lines.userData.bytes = bytes;
 
+    // Ghost preview: reveal the complete 3D object geometry across all layers
+    if (ghostLinesRef.current) {
+      ghostLinesRef.current.geometry.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      ghostLinesRef.current.geometry.setDrawRange(0, count);
+    }
+
     // Travel-move overlay: a separate static mesh, filtered by the same
     // exclude-object rule as the extrusion path but not draw-range-synced
     // to print progress (travels are instantaneous jumps, not something a
@@ -367,7 +395,10 @@ export function GCodeVisualizerV2() {
     }
     
     // Immediately jump to the current position
-    updateDrawRange(useStore.getState().telemetry.file_position);
+    const curFp = useStore.getState().telemetry?.file_position || 0;
+    targetPosRef.current = curFp;
+    interpPosRef.current = curFp;
+    updateDrawRange(curFp);
   }, [allPaths, excludedObjects, colorByHeight, showTravel, travelSegments]);
 
   // 4. Update the visualizer 60 times a second using a binary search.
@@ -399,46 +430,50 @@ export function GCodeVisualizerV2() {
     }
   }
 
-  // ── Real-time interpolation ────────────────────────────────────────────────
-  // Instead of snapping to file_position on every backend tick (which causes
-  // bursts of lines appearing at once), we smoothly advance an interpolated
-  // position at 60fps between telemetry updates.
-  const interpRef = useRef({
-    prevPos: 0,
-    targetPos: 0,
-    prevTime: performance.now(),
-    targetTime: performance.now(),
-  });
+  // ── Smooth 60 FPS real-time tracking ───────────────────────────────────────
+  const interpPosRef = useRef(0);
+  const targetPosRef = useRef(0);
+  const lastTimeRef  = useRef(performance.now());
 
-  // On each telemetry tick from the backend, record the new target.
+  // On each telemetry tick from the backend, update target position
   useEffect(() => {
+    let lastFp = -1;
     const unsub = useStore.subscribe((state) => {
       const fp = state.telemetry?.file_position;
-      if (fp == null) return;
-      const now = performance.now();
-      const r = interpRef.current;
-      // The new target is wherever the backend just told us we are.
-      // The previous target becomes our new start point.
-      r.prevPos  = r.targetPos;
-      r.prevTime = r.targetTime ?? now;
-      r.targetPos  = fp;
-      r.targetTime = now;
+      if (fp == null || fp === lastFp) return;
+      lastFp = fp;
+      targetPosRef.current = fp;
+      // First load or huge jump (> 50,000 bytes): snap immediately
+      if (interpPosRef.current === 0 || Math.abs(fp - interpPosRef.current) > 50000) {
+        interpPosRef.current = fp;
+        updateDrawRange(fp);
+      }
     });
     return unsub;
   }, []);
 
-  // Every animation frame, linearly interpolate toward the current target.
-  // This makes lines appear one-by-one as the nozzle moves, not in bursts.
+  // Every animation frame (60 FPS), smoothly advance interpPos toward targetPos
   useEffect(() => {
     let rafId;
     const tick = () => {
-      const r = interpRef.current;
       const now = performance.now();
-      const elapsed = now - r.prevTime;
-      const window  = Math.max(1, r.targetTime - r.prevTime);
-      const t = Math.min(1, elapsed / window);
-      const interpPos = r.prevPos + (r.targetPos - r.prevPos) * t;
-      updateDrawRange(interpPos);
+      const dt = Math.min((now - lastTimeRef.current) / 1000, 0.1);
+      lastTimeRef.current = now;
+
+      const target = targetPosRef.current;
+      const current = interpPosRef.current;
+
+      if (target > 0) {
+        if (Math.abs(target - current) > 1) {
+          const factor = 1.0 - Math.exp(-20 * dt);
+          interpPosRef.current = current + (target - current) * factor;
+          updateDrawRange(interpPosRef.current);
+        } else if (current !== target) {
+          interpPosRef.current = target;
+          updateDrawRange(target);
+        }
+      }
+
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);

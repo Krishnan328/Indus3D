@@ -18,9 +18,12 @@ import os
 from typing import Optional
 
 from services.led_controller import hex_to_rgb01  # reuse the same validator
+from config.paths import get_config_dir
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_PROFILES_PATH = os.path.join(_HERE, "led_profiles.json")
+_CONFIG_DIR = get_config_dir()
+_PROFILES_PATH = os.path.join(_CONFIG_DIR, "led_profiles.json")
+_SEED_PATH = os.path.join(_HERE, "led_profiles.json")
 
 # "alert" is not tied to a print_stats state the way the others are — it's
 # the flash color used for transient runaway/fault corrective actions (see
@@ -53,9 +56,10 @@ def _default_profile() -> dict:
 
 
 def _load_all() -> dict:
-    if os.path.isfile(_PROFILES_PATH):
+    target_file = _PROFILES_PATH if os.path.isfile(_PROFILES_PATH) else (_SEED_PATH if os.path.isfile(_SEED_PATH) else None)
+    if target_file and os.path.isfile(target_file):
         try:
-            with open(_PROFILES_PATH) as f:
+            with open(target_file) as f:
                 data = json.load(f)
             if isinstance(data, dict):
                 return data
@@ -65,6 +69,7 @@ def _load_all() -> dict:
 
 
 def _save_all(data: dict) -> None:
+    os.makedirs(os.path.dirname(_PROFILES_PATH), exist_ok=True)
     tmp = _PROFILES_PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)

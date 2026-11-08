@@ -53,3 +53,38 @@ MODEL_PATH = os.environ.get("INDUS3D_VISION_MODEL_PATH", os.path.join(os.path.di
 # How often to run a detection pass, in seconds. Inference (especially
 # YOLO) is CPU-heavy — don't run this at camera framerate.
 CHECK_INTERVAL_S = float(os.environ.get("INDUS3D_VISION_CHECK_INTERVAL_S", "15"))
+
+# ── Device Tier — controls which vision inference tier is activated ────────────
+# Tier 0: Pi 3 / no-GPU devices — OpenCV Hu Moment contour matching only
+# Tier 1: Pi 4B                 — + CAXTON ONNX 4-head classifier (periodic at layer change)
+# Tier 2: Pi 5                  — + ProtoNet ShuffleNetV2 few-shot (per-layer)
+# Tier 3: Desktop / x86         — + YOLOv8n/s real-time (background thread 1 FPS)
+#
+# Set INDUS3D_DEVICE_TIER explicitly, or let it auto-detect from /proc/cpuinfo.
+
+def _autodetect_tier() -> int:
+    """
+    Auto-detects Raspberry Pi model from /proc/cpuinfo.
+    Falls back to Tier 3 (Desktop) if not on a Pi or file not readable.
+    """
+    try:
+        with open("/proc/cpuinfo", "r") as f:
+            info = f.read().lower()
+        if "raspberry pi 5" in info:
+            return 2   # Pi 5 → Tier 2 (ProtoNet capable)
+        if "raspberry pi 4" in info:
+            return 1   # Pi 4B → Tier 1 (CAXTON ONNX)
+        if "raspberry pi 3" in info or "raspberry pi 2" in info:
+            return 0   # Pi 3/2 → Tier 0 (Contour only)
+        if "raspberry pi" in info:
+            return 0   # Unknown Pi → safe minimum
+    except OSError:
+        pass
+    return 3   # Desktop / x86 → Tier 3 (full YOLO)
+
+
+DEVICE_TIER = int(os.environ.get("INDUS3D_DEVICE_TIER", str(_autodetect_tier())))
+
+# Models directory — all pre-trained weights live here
+MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
+

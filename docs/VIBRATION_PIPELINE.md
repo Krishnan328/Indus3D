@@ -98,10 +98,55 @@ G1 Z0.3 F600
 G90
 ```
 
+### Auto Z-Offset & First Layer Bed Adhesion Optimization (Tribo-Acoustic Squeeze-Flow & Contact Mechanics)
+
+First-layer adhesion failure stems from microscopic deviations between the nozzle orifice and the textured build surface:
+- **Nozzle too high ($h > h^*$):** Inadequate ribbon squeeze, insufficient contact width $w < w^*$, lower interfacial thermal conduction, leading to thermal contraction detachment.
+- **Nozzle too low ($h < h^*$):** Viscous polymer melt backpressure spikes, nozzle scrapes against PEI asperities, extruder stepper motor skips steps.
+
+The Indus3D digital twin couples the **toolhead accelerometer** (`LIS2DW` on BigTreeTech `EBB36`) with the **Rust DSP engine** (`backend/dsp/`) to solve this across two distinct operational regimes:
+
+#### 1. Pre-Print Touch-Down Probing (Hertzian Dynamic Contact)
+The toolhead descends in Z at low velocity ($v_z \approx 1 - 2\text{ mm/s}$). Before contact ($z > z_\text{bed}$), contact force $F_\text{contact} = 0$. At contact ($z \le z_\text{bed}$), Hertzian contact stiffness increases discontinuously:
+
+$$F_\text{contact}(\delta) = \frac{4}{3} E^* \sqrt{R} \, \delta^{3/2}, \quad K_\text{contact} = \frac{dF}{d\delta} = 2 E^* \sqrt{R \delta}$$
+
+$$\frac{1}{E^*} = \frac{1 - \nu_\text{nozzle}^2}{E_\text{nozzle}} + \frac{1 - \nu_\text{bed}^2}{E_\text{bed}}$$
+
+This produces an instantaneous time-domain jerk spike ($j_z = d\ddot{z}/dt$) and a statistical kurtosis surge ($\gamma_2 > 6.0$):
+- **Contact Trigger Threshold:** $|j_z| > 400.0\text{ g/s}$ OR $\gamma_2 > 6.0$.
+- Allows establishing true physical $Z=0$ directly at the nozzle tip, bypassing probe thermal drift.
+
+#### 2. In-Situ First-Layer Hydrodynamics & Asperity Friction (HFFI Metric)
+During first-layer extrusion, polymer melt squeeze-flow follows the Stefan lubrication power-law equation:
+
+$$P(r) \approx K \left(\frac{2n + 1}{n}\right)^n \left(\frac{\dot{V}}{\pi r h^{2n+1}}\right)^n \implies F_\text{lift}(h) \propto \frac{\eta \, v_z \, R_\text{land}^4}{h^3}$$
+
+When the gap approaches the bed roughness ($h \le R_a \approx 15 - 25\,\mu\text{m}$), Coulomb-Stribeck asperity collisions between the nozzle land and PEI grains excite high-frequency acoustic emission:
+
+$$f_\text{asperity} \approx \frac{v_\text{toolhead}}{\lambda_\text{texture}} \approx \frac{50\text{ mm/s}}{40\,\mu\text{m}} \approx 1250\text{ Hz}$$
+
+The Rust DSP engine computes the **High-Frequency Friction Index (HFFI)**:
+
+$$\text{HFFI} = \frac{\int_{1200\text{ Hz}}^{1600\text{ Hz}} S_{aa}(f) \, df}{\int_{20\text{ Hz}}^{400\text{ Hz}} S_{aa}(f) \, df}$$
+
+| HFFI Range | Print Regime | Diagnosis | Closed-Loop Action |
+|:---|:---|:---|:---|
+| $\text{HFFI} > 0.38$ | **Rubbing** | Nozzle dragging against PEI asperities | Autonomous injection: `SET_GCODE_OFFSET Z_ADJUST=+0.025 MOVE=1` |
+| $0.05 \le \text{HFFI} \le 0.38$ | **Optimal Squish** | Viscous melt ribbon damping, optimal contact area | Maintain current Z; optimal adhesion achieved |
+| $\text{HFFI} < 0.05$ | **Under-Squish** | Nozzle floating above bed, weak polymer spread | Autonomous injection: `SET_GCODE_OFFSET Z_ADJUST=-0.015 MOVE=1` |
+
+#### 3. Closed-Loop Safety & Execution
+- **Active Window:** Only runs during Layer 1 ($Z \le 0.35\text{ mm}$).
+- **Rate-Limiting Cooldown:** Minimum 2.0 seconds between adjustments to permit acoustic settling.
+- **Cumulative Bounds:** Clamped strictly within $[-0.08\text{ mm}, +0.08\text{ mm}]$ and verified through `bed_safety.clamp_z_offset()` to eliminate any possibility of bed collision.
+
 ## Self-Calibrating Baseline
 
 Instead of hardcoded thresholds, the system uses a dedicated **calibration print** (hollow octagon printed at multiple speeds and Z-heights). This establishes a per-printer baseline so the anomaly detection engine can dynamically recognize deviations from the known "healthy" baseline of that specific machine.
 
 ## Hardware Status
 
-*Dependency Check:* This pipeline depends on the accelerometer hardware being physically wired. The Rust binary is compiled and tested. A dual-MCU setup (RP2040/Pico bridging a bed-mounted ADXL345) is the reference hardware. Hardware readiness must be confirmed before the live UDP ingestion path activates.
+- **Toolhead Accelerometer:** BigTreeTech EBB36 Gen2 onboard `LIS2DW` connected via high-speed SPI (`EBB:PB1`).
+- **Eddy-Current Surface Profiler:** BigTreeTech Eddy USB (`ldc1612` inductive coil probe) for high-density rapid bed mesh mapping.
+- **Rust DSP Subprocess:** `indus3d-dsp` running in release mode (`UDP 3200` ingestion, `UDP 3201` telemetry broadcast, `UDP 3202` collision alerts).

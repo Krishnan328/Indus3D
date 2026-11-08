@@ -21,10 +21,19 @@ from config.settings import settings
 auth_bp = Blueprint("auth", __name__)
 
 # ── Secret key persistence ──────────────────────────────────────────────────
-_SECRET_KEY_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".flask_secret_key"
-)
+def _get_secret_key_path() -> str:
+    env_path = os.getenv("FLASK_SECRET_KEY_PATH")
+    if env_path:
+        return env_path
+    code_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.access(code_dir, os.W_OK):
+        return os.path.join(code_dir, ".flask_secret_key")
+    data_home = os.getenv("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    key_dir = os.path.join(data_home, "indus3d")
+    os.makedirs(key_dir, exist_ok=True)
+    return os.path.join(key_dir, ".flask_secret_key")
+
+_SECRET_KEY_PATH = _get_secret_key_path()
 
 def get_or_create_secret_key() -> str:
     if settings.FLASK_SECRET_KEY:
@@ -108,6 +117,11 @@ def install_auth_gate(app):
     @app.before_request
     def _enforce_auth():
         if not auth_required():
+            return None
+        # The SPA and its hashed assets have to remain reachable so it can
+        # render LoginScreen and submit credentials.  Only API and WebSocket
+        # routes expose printer state or controls; all of those remain gated.
+        if not request.path.startswith("/api/") and request.path != "/ws":
             return None
         if request.path in _ALLOWLIST:
             return None

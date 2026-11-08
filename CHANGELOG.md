@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.2] - Multi-Distribution Packaging: KIAUH Extension (Debian) & Pure NixOS Flake
+
+### Added
+- **Official KIAUH Extension (`integrations/kiauh/`)**:
+  - Implemented `metadata.json` and `extension.py` compatible with the KIAUH v6 community extension architecture.
+  - Added `install-extension.sh` one-line installer linking Indus3D into `~/kiauh/extensions/indus3d/` for interactive menu-driven installation, updates, and service management.
+  - Added robust `indus3d_installer.sh` handling Debian/Raspberry Pi OS APT dependencies, virtualenv setup, Moonraker update manager injection, and Rust DSP compilation.
+- **Unified Standalone Scripts (`install.sh`, `uninstall.sh`)**:
+  - Streamlined root CLI installer to wrap `indus3d_installer.sh` with full dependency auditing and systemd service creation.
+- **NixOS Declarative Packaging Documentation (`docs/DISTRIBUTION.md`)**:
+  - Comprehensive comparison and setup guide detailing `flake.nix`, `nix/modules/indus3d.nix`, sandboxed systemd execution, and remote deployment.
+
+## [2.1.1] - Hardware Decoupling, External Sensor Integration & Serial Protection
+
+### Added
+- **Smart Filament Sensor Integration (`services/filament_sensor.py`)**:
+  - Live HTTP telemetry client on port 7126 reading measured filament diameter (AS5600 magnetic angle), feed velocity, volumetric flow, remaining spool weight, and clog/runout detection.
+  - Dynamically updates the digital twin's `ExtrusionModel` cross-sectional bead area from actual measured filament diameter.
+- **ESP8266 Multi-Sensor Bed & Chamber Hub (`services/bed_sensor.py`)**:
+  - Live HTTP telemetry client on port 7127 streaming ADXL345 bed acceleration, jerk delta, and BME280 chamber environment (temperature, relative humidity, barometric pressure).
+  - Chamber temperature dynamically injected into device temperatures and Mainsail parity dashboard cards.
+
+### Fixed
+- **Serial Port Hijacking & MCU Disconnection Prevention**:
+  - Eliminated arbitrary `/dev/ttyACM*` fallback in `indus3d_sensor_daemon.py`, preventing the filament daemon from grabbing Klipper's toolhead MCU (EBB36) or probe MCU (BTT Eddy).
+  - Explicitly filtered out any `/dev/serial/by-id/*Klipper*` serial devices from sensor auto-discovery.
+  - Initialized `speed_mm_s` before telemetry packet parsing loop to eliminate `UnboundLocalError`.
+- **ATmega2560 MCU Reset Lockup**:
+  - Replaced `restart_method: command` with `restart_method: arduino` in Klipper `printer.cfg`, restoring hardware DTR/RTS resets when the mainboard enters a shutdown state.
+- **ESP8266 Daemon Non-blocking Crash Reset**:
+  - Replaced blocking `self.serial_lock` in `esp_bed_monitor_daemon.py` with timed acquisition (`timeout=0.25`), preventing HTTP handler deadlocks during `/reset_crash`.
+- **Dashboard UI & Viewport Stability (Commit `2135ad3`)**:
+  - Deployed updated frontend bundle featuring device temperature cards (BTT Eddy, BTT Eddy Mcu, EBB36, Chamber), optimistic target inputs, open thermistor sanitization (`--°C (Sensor Open)`), and eliminated spurious 3D origin trails.
+
+## [2.1.0] - Auto Z-Offset & Tribo-Acoustic Bed Adhesion Optimization
+
+### Added
+- **Rust DSP Auto-Z Engine (`backend/dsp/`)**:
+  - Implemented `AutoZMetrics` in `dsp.rs` tracking kinematic jerk, kurtosis surges, and the High-Frequency Friction Index (HFFI).
+  - Hertzian contact detection for pre-print nozzle touch-down probing ($j_z > 400\text{ g/s}$ or kurtosis $> 6.0$).
+  - Spectral energy ratio separating micro-asperity tribo-friction ($1200 - 1600\text{ Hz}$) from motor step harmonics ($20 - 400\text{ Hz}$).
+  - High-performance binary IDX packet and CSV stream ingestion.
+  - Standalone `--analyze-csv` CLI flag in `main.rs` for Klipper input-shaper CSV parsing.
+- **Closed-Loop Quality Controller (`quality_controller.py`)**:
+  - In-situ first layer bed adhesion optimization: autonomously baby-steps Klipper Z-offset via `SET_GCODE_OFFSET Z_ADJUST=... MOVE=1`.
+  - Classifies print into `rubbing` (+0.025 mm relief trim), `under_squish` (-0.015 mm adhesion boost), and `optimal`.
+  - Rate-limiting (2.0s cooldown) and safety clamping ($[-0.08, +0.08]\text{ mm}$) to guarantee physical safety.
+- **Digital Twin & Telemetry Bridge (`dsp_bridge.py`, `vibration_monitor.py`)**:
+  - Structured `auto_z` telemetry stream exposed over UDP 3201.
+  - Live alerting for first-layer nozzle rubbing anomalies.
+- **Frontend Visualization (`VibrationPanel.jsx`)**:
+  - Real-time Bed Friction badge displaying live HFFI, print squish regime, and active Z-trim adjustments.
+- **Mathematical Documentation**:
+  - Updated `docs/VIBRATION_PIPELINE.md`, `extracted_equations.md`, and `README.md` with complete contact mechanics and Stefan squeeze-flow derivations.
+
 ## [2.0.0] - Production Release
 
 ### Added
@@ -83,7 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Layer-change print timelapse capture daemon (`backend/core/timelapse.py`).
 - Multi-channel notification webhook dispatchers for Discord, Telegram, and Pushover (`backend/core/notifications.py`).
 - Configurable alert action execution and deduplication engine (`backend/core/alert_actions.py`).
-- Extended `TelemetryWorker` with default offline state and multi-sensor concurrent monitoring.
+- Extended `TelemetryWorker` polling Klipper, power, and environmental sensors concurrently.
 - Unit tests for alert dispatch and deduplication in `backend/tests/test_alert_actions.py`.
 
 ## [2.0.0-phase2] - Session Authentication & Sliding-Window Rate Limiting

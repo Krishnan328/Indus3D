@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import time
 
-from workers.dsp_bridge import dsp_bridge
-
 # ── Thresholds (tunable) ─────────────────────────────────────────────────────
 RMS_WARN      = 0.3   # g  — sustained vibration above this is high
 RMS_CRIT      = 0.8   # g  — critical vibration level
@@ -23,10 +21,20 @@ FREQ_SHIFT    = 15.0  # Hz — resonance drift from baseline triggers an alert
 _EMPTY_AXIS = {"rms": 0.0, "peak_hz": 0.0, "kurtosis": 0.0,
                "magnitude": 0.0, "stiffness": 0.0, "torque_ripple": 0.0}
 
+_EMPTY_AUTOZ = {
+    "is_contact": False,
+    "hffi": 0.0,
+    "jerk_z": 0.0,
+    "kurtosis_z": 3.0,
+    "regime": "optimal",
+    "recommended_trim": 0.0,
+}
+
 _EMPTY_VIB = {
     "x": dict(_EMPTY_AXIS),
     "y": dict(_EMPTY_AXIS),
     "z": dict(_EMPTY_AXIS),
+    "auto_z": dict(_EMPTY_AUTOZ),
     "alerts": [],
     "available": False,
 }
@@ -37,49 +45,32 @@ class VibrationMonitor:
         self._baseline_hz: dict[str, float] = {}   # axis -> established peak_hz
         self._baseline_window: list[tuple[str, float]] = []  # recent (axis, hz) for warmup
         self._warmup_samples = 10   # number of samples before baseline is trusted
-        self._last_collision_ts: float = 0.0  # timestamp of last processed collision event
 
-    def update(self, dsp_latest: dict | None, print_state: str) -> tuple[dict, list]:
+    def update(self, dsp_latest: dict | None, print_state: str, dsp_available: bool = True, autoz_latest: dict | None = None) -> tuple[dict, list]:
         """
         Args:
             dsp_latest:   DspBridge.latest or None
             print_state:  e.g. "printing", "standby"
+            dsp_available: whether the Rust DSP subprocess is running and listening
+            autoz_latest: DspBridge.latest_autoz or None
 
         Returns:
             (vib_dict, alerts)
         """
-        alerts: list[dict] = []
-
-        # ── Fast-path: collision detection ─────────────────────────────────────
-        collision = dsp_bridge.latest_collision
-        if collision and isinstance(collision, dict):
-            event_ts = float(collision.get("timestamp", 0.0))
-            if event_ts > self._last_collision_ts:
-                self._last_collision_ts = event_ts
-                peak_g = float(collision.get("peak_g", 0.0))
-                axis   = str(collision.get("axis", "?")).upper()
-                alerts.append({
-                    "id":    "collision_detected",
-                    "level": "critical",
-                    "msg":   (
-                        f"⚠️  Collision detected on {axis}-axis "
-                        f"({peak_g:.2f} g) — print paused"
-                    ),
-                })
-                # Fire corrective action (pause printer) — import here to
-                # avoid circular imports at module load time
-                try:
-                    from core.alert_actions import execute_alert_action
-                    execute_alert_action("collision_detected", print_state)
-                except Exception:
-                    pass  # best-effort — alert is already in the list
-
         if dsp_latest is None:
-            vib_dict = dict(_EMPTY_VIB)
-            vib_dict["alerts"] = alerts
-            return vib_dict, alerts
+            return {
+                "x": dict(_EMPTY_AXIS),
+                "y": dict(_EMPTY_AXIS),
+                "z": dict(_EMPTY_AXIS),
+                "auto_z": autoz_latest or dict(_EMPTY_AUTOZ),
+                "alerts": [],
+                "available": dsp_available,
+                "dsp_online": dsp_available,
+                "streaming": False,
+            }, []
 
         axes = {}
+        alerts: list[dict] = []
         is_printing = (print_state == "printing")
 
         for axis_name in ("x", "y", "z"):
@@ -143,14 +134,28 @@ class VibrationMonitor:
                         # Slowly track baseline (EMA α=0.05)
                         self._baseline_hz[axis_name] = 0.95 * baseline + 0.05 * peak_hz
 
-        vib_dict = {**axes, "alerts": alerts, "available": True}
+        if autoz_latest and is_printing:
+            if autoz_latest.get("regime") == "rubbing":
+                alerts.append({
+                    "id":    "vib_nozzle_rubbing",
+                    "level": "warn",
+                    "msg":   f"First-layer nozzle rubbing detected (HFFI: {autoz_latest.get('hffi', 0.0):.2f}) — Auto-Z trim active",
+                })
+
+        vib_dict = {
+            **axes,
+            "auto_z": autoz_latest or dict(_EMPTY_AUTOZ),
+            "alerts": alerts,
+            "available": True,
+            "dsp_online": True,
+            "streaming": True,
+        }
         return vib_dict, alerts
 
     def reset_baseline(self):
         """Call at print start to re-establish frequency baseline."""
         self._baseline_hz.clear()
         self._baseline_window.clear()
-        self._last_collision_ts = 0.0
 
 
 # Module-level singleton

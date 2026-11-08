@@ -18,9 +18,12 @@ import uuid
 from typing import Optional
 
 from config.settings import settings
+from config.paths import get_config_dir
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_PRINTERS_PATH = os.path.join(_HERE, "printers.json")
+_CONFIG_DIR = get_config_dir()
+_PRINTERS_PATH = os.path.join(_CONFIG_DIR, "printers.json")
+_SEED_PATH = os.path.join(_HERE, "printers.json")
 
 LOCAL_ID = "local"
 
@@ -40,20 +43,25 @@ def _default_registry() -> dict:
 
 
 def _load() -> dict:
-    if os.path.isfile(_PRINTERS_PATH):
+    target_file = _PRINTERS_PATH if os.path.isfile(_PRINTERS_PATH) else (_SEED_PATH if os.path.isfile(_SEED_PATH) else None)
+    if target_file and os.path.isfile(target_file):
         try:
-            with open(_PRINTERS_PATH) as f:
+            with open(target_file) as f:
                 data = json.load(f)
             if isinstance(data, dict) and isinstance(data.get("printers"), list) and data.get("active"):
                 return data
         except Exception as e:
             logging.info(f"🔴 printers.json unreadable, resetting: {e}")
     data = _default_registry()
-    _save(data)
+    try:
+        _save(data)
+    except Exception as e:
+        logging.info(f"⚠️ Could not persist default printers.json: {e}")
     return data
 
 
 def _save(data: dict) -> None:
+    os.makedirs(os.path.dirname(_PRINTERS_PATH), exist_ok=True)
     tmp = _PRINTERS_PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)

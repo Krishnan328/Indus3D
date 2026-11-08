@@ -18,7 +18,24 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
 _HERE = Path(__file__).parent.parent
-DATA_BED_DIR = _HERE / "data" / "bed"
+
+def _get_bed_data_dir() -> Path:
+    env_dir = os.getenv("INDUS3D_DATA_DIR")
+    if env_dir:
+        p = Path(env_dir) / "bed"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    code_dir = _HERE
+    if os.access(str(code_dir), os.W_OK):
+        p = code_dir / "data" / "bed"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    data_home = os.getenv("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    p = Path(data_home) / "indus3d" / "bed"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+DATA_BED_DIR = _get_bed_data_dir()
 CUSTOM_BED_FILE = DATA_BED_DIR / "custom_bed.json"
 CUSTOM_STL_FILE = DATA_BED_DIR / "bed_model.stl"
 
@@ -121,9 +138,15 @@ class BedSafetyEngine:
         self.bed_exclude_area = []
         self.source_name = "printer.cfg"
         if CUSTOM_BED_FILE.is_file():
-            CUSTOM_BED_FILE.unlink(missing_ok=True)
+            try:
+                CUSTOM_BED_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
         if CUSTOM_STL_FILE.is_file():
-            CUSTOM_STL_FILE.unlink(missing_ok=True)
+            try:
+                CUSTOM_STL_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
         self.has_custom_model = False
         self.custom_model_filename = None
 

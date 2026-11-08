@@ -3,6 +3,12 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
+  // The dashboard is opened at 127.0.0.1 by the local launcher. Bind to the
+  // same IPv4 loopback interface instead of relying on an OS-specific
+  // localhost resolution (which can otherwise select IPv6 only).
+  server: {
+    host: "127.0.0.1",
+  },
   plugins: [
     react(),
     tailwindcss(),

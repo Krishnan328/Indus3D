@@ -140,25 +140,10 @@ class SimulatedTelemetryWorker:
     def __init__(self):
         self._last_segment_distance = 0.0
 
-        self.latest: dict          = {
-            "online": True,
-            "sim": True,
-            "print_state": "standby",
-            "cmd_x": 110.0, "cmd_y": 110.0, "cmd_z": 5.0, "cmd_e": 0.0,
-            "live_x": 110.0, "live_y": 110.0, "live_z": 5.0,
-            "ext_temp": 24.0, "ext_target": 0.0, "ext_pwm": 0.0,
-            "bed_temp": 24.0, "bed_target": 0.0,
-            "progress": 0.0,
-            "quality": {"active": quality_controller.active, "corrections": []},
-            "kinematics": {},
-            "thermals": {},
-            "extrusion": {},
-            "vibration": {},
-            "power": {"voltage": 0., "current": 0., "power": 0.},
-            "environment": {"temperature": 24., "humidity": 45.},
-            "gcode_feed": [],
-            "maintenance_hints": [],
-        }
+        self.latest: dict          = {}
+        self._klippy_state: str    = "ready"
+        self._klippy_connected: bool = True
+        self._klippy_state_message: str = ""
         self.power                 = {"voltage": 0., "current": 0., "power": 0.}
         self.environment           = {"temperature": 24., "humidity": 45.}
         self.gcode_feed: deque     = deque(maxlen=10)
@@ -173,6 +158,7 @@ class SimulatedTelemetryWorker:
         self._wp_idx    = 0
         self._wp_time_debt = 0.0  # seconds of real-print-time still owed this tick
 
+        self._cond         = threading.Condition()
         self._running      = True
         self._t            = 0.
         self._print_count  = 0
@@ -284,6 +270,17 @@ class SimulatedTelemetryWorker:
         self._az.move_to(5.0)
         self.gcode_feed.append({"byte": 0, "text": "[INDUS] G28 ; Sim homed"})
 
+    def set_temperature(self, heater: str, target: float):
+        """Set simulated heater target for extruder (nozzle) or bed."""
+        heater = str(heater).lower()
+        target = max(0.0, float(target))
+        if "bed" in heater:
+            self._bed.set_target(target)
+            self.gcode_feed.append({"byte": 0, "text": f"; Bed target set to {target:.1f}°C"})
+        else:
+            self._ext.set_target(target)
+            self.gcode_feed.append({"byte": 0, "text": f"; Extruder target set to {target:.1f}°C"})
+
     def jog(self, x=0.0, y=0.0, z=0.0, e=0.0):
         """Bounded relative motion with bed screw and exclusion zone collision checking."""
         cur_x, cur_y, cur_z = self._ax.pos, self._ay.pos, self._az.pos
@@ -305,6 +302,26 @@ class SimulatedTelemetryWorker:
             self._ae += e
         terms = " ".join(f"{axis}{value:+.1f}" for axis, value in (("X", x), ("Y", y), ("Z", z), ("E", e)) if value)
         self.gcode_feed.append({"byte": 0, "text": f"[INDUS] Jog {terms}"})
+        return True
+
+    def move_to(self, x=None, y=None, z=None):
+        """Bounded absolute positioning with bed screw and exclusion zone collision checking."""
+        cur_x, cur_y, cur_z = self._ax.pos, self._ay.pos, self._az.pos
+        target_x = cur_x if x is None else max(bed_safety.min_x, min(bed_safety.max_x, float(x)))
+        target_y = cur_y if y is None else max(bed_safety.min_y, min(bed_safety.max_y, float(y)))
+        target_z = cur_z if z is None else max(bed_safety.min_z, min(bed_safety.max_z, float(z)))
+
+        is_safe, reason = bed_safety.validate_move(cur_x, cur_y, cur_z, target_x, target_y, target_z)
+        if not is_safe:
+            self.gcode_feed.append({"byte": 0, "text": f"[SAFETY BLOCKED] {reason}"})
+            logging.warning(f"🛡️ Move blocked: {reason}")
+            return False
+
+        self._ax.move_to(target_x)
+        self._ay.move_to(target_y)
+        self._az.move_to(target_z)
+        terms = " ".join(f"{axis}{value:.1f}" for axis, value in (("X", x), ("Y", y), ("Z", z)) if value is not None)
+        self.gcode_feed.append({"byte": 0, "text": f"[INDUS] G90 G1 {terms}"})
         return True
 
     def inject_quality_command(self, cmd: str):
@@ -360,8 +377,7 @@ class SimulatedTelemetryWorker:
 
             # ── Synthetic ADXL injection ──────────────────────────────────
             # Feed 32 samples per tick (~320 Hz effective) into the DSP
-            # bridge as binary IDX packets. Base Gaussian noise + 45 Hz
-            # resonance when moving fast.
+            # bridge. Base Gaussian noise + 45 Hz resonance when moving fast.
             if dsp_bridge.available:
                 import random as _rand
                 vel_proxy = getattr(self, "_motion_velocity", 0.0)
@@ -374,9 +390,7 @@ class SimulatedTelemetryWorker:
                     noise_z = _rand.gauss(0, 0.02)
                     # Inject printer resonance (X/Y in-plane ~45 Hz)
                     res = res_amp * math.sin(2 * math.pi * 45.0 * st)
-                    dsp_bridge.send_adxl_binary(noise_x + res, noise_y + res, noise_z, st)
-                # Push velocity metadata so the Rust notch filter can mask motor artefacts
-                dsp_bridge.send_velocity_meta(self._ax.velocity, self._ay.velocity)
+                    dsp_bridge.send_adxl(noise_x + res, noise_y + res, noise_z, st)
 
 
         elif self._state == "test":
@@ -459,6 +473,9 @@ class SimulatedTelemetryWorker:
             "time_remaining": time_rem,
             "speed_factor":  100,
             "flow_factor":   100,
+            "klippy_state":  self._klippy_state,
+            "klippy_connected": self._klippy_connected,
+            "state_message": self._klippy_state_message,
         }
 
         printer_state.update(snap)
@@ -481,7 +498,7 @@ class SimulatedTelemetryWorker:
 
         # Quality controller — log commands to terminal in sim
         if is_active:
-            cmds = quality_controller.update(snap, kin, thm, ext_)
+            cmds = quality_controller.update(snap, kin, thm, ext_, autoz=dsp_bridge.latest_autoz)
             for cmd in cmds:
                 self.inject_quality_command(cmd)   # show in terminal
 
@@ -492,25 +509,33 @@ class SimulatedTelemetryWorker:
 
         # Vibration monitor — reads latest DSP result and raises alerts
         vib_dict, _vib_alerts = vibration_monitor.update(
-            dsp_bridge.latest, snap["print_state"]
+            dsp_bridge.latest, snap["print_state"], dsp_bridge.available,
+            autoz_latest=dsp_bridge.latest_autoz,
         )
 
-        self.latest = {
-            **snap,
-            "kinematics":        kin,
-            "thermals":          thm,
-            "extrusion":         ext_,
-            "vibration":         vib_dict,
-            "exclude_object": self._get_exclude_payload(),
-            "power":             self.power,
-            "environment":       self.environment,
-            "gcode_feed":        list(self.gcode_feed),
-            "maintenance_hints": self.maintenance_hints,
-            "quality": {
-                "active":      quality_controller.active,
-                "corrections": quality_controller.corrections[:10],
-            },
-        }
+        with self._cond:
+            self.latest = {
+                **snap,
+                "kinematics":        kin,
+                "thermals":          thm,
+                "extrusion":         ext_,
+                "vibration":         vib_dict,
+                "exclude_object": self._get_exclude_payload(),
+                "power":             self.power,
+                "environment":       self.environment,
+                "gcode_feed":        list(self.gcode_feed),
+                "maintenance_hints": self.maintenance_hints,
+                "quality": {
+                    "active":      quality_controller.active,
+                    "corrections": quality_controller.corrections[:10],
+                },
+            }
+            self._cond.notify_all()
+
+    def wait_for_telemetry(self, timeout: float = 0.1) -> bool:
+        """Blocks until a new simulated telemetry snapshot is published or timeout expires."""
+        with self._cond:
+            return self._cond.wait(timeout)
 
     # ── Print lifecycle ───────────────────────────────────────────────────────
     def _start_print(self):
@@ -665,6 +690,9 @@ class SimulatedTelemetryWorker:
         if cmd == "M112":
             self._state = "error"
             self.fault = "Klipper reported: SHUTDOWN\nEmergency Stop Requested"
+            self._klippy_state = "shutdown"
+            self._klippy_connected = False
+            self._klippy_state_message = 'MCU \'mcu\' shutdown: Emergency stop requested via M112\nOnce the underlying issue is corrected, use the "FIRMWARE_RESTART" command to reset the firmware, reload the config, and restart the host software.\nPrinter is shutdown'
             self._ext.set_target(0, instant=True)
             self._bed.set_target(0, instant=True)
             self.gcode_feed.append({"byte": 0, "text": "!!! M112 EMERGENCY STOP !!!"})
@@ -673,6 +701,9 @@ class SimulatedTelemetryWorker:
         elif cmd == "RESTART" or cmd == "FIRMWARE_RESTART":
             self._state = "idle"
             self.fault = None
+            self._klippy_state = "ready"
+            self._klippy_connected = True
+            self._klippy_state_message = ""
             self._ext.set_target(0, instant=True)
             self._bed.set_target(0, instant=True)
             self._ax.pos = self._bed_cx; self._ax._target = self._bed_cx
@@ -693,18 +724,81 @@ class SimulatedTelemetryWorker:
             ]:
                 self.gcode_feed.append({"byte": 0, "text": line})
         elif cmd.startswith("G28"):
-            self._ax.pos = self._bed_cx; self._ax._target = self._bed_cx
-            self._ay.pos = self._bed_cy; self._ay._target = self._bed_cy
-            self._az.pos = 5.;           self._az._target = 5.
-            self.gcode_feed.append({"byte": 0, "text": "G28 ; Homed"})
+            if "X" in cmd:
+                self._ax.pos = self._bed_cx; self._ax._target = self._bed_cx
+            elif "Y" in cmd:
+                self._ay.pos = self._bed_cy; self._ay._target = self._bed_cy
+            elif "Z" in cmd:
+                self._az.pos = 5.0;          self._az._target = 5.0
+            else:
+                self._ax.pos = self._bed_cx; self._ax._target = self._bed_cx
+                self._ay.pos = self._bed_cy; self._ay._target = self._bed_cy
+                self._az.pos = 5.0;          self._az._target = 5.0
+            self.gcode_feed.append({"byte": 0, "text": f"{cmd} ; Homed"})
+        elif cmd.startswith("M84") or cmd.startswith("M18"):
+            self.gcode_feed.append({"byte": 0, "text": "; Steppers disabled (Motors Off)"})
         elif cmd.startswith("G1"):
             import re
             mx = re.search(r'X([0-9.-]+)', cmd)
             my = re.search(r'Y([0-9.-]+)', cmd)
             mz = re.search(r'Z([0-9.-]+)', cmd)
+            me = re.search(r'E([0-9.-]+)', cmd)
             if mx: self._ax.move_to(float(mx.group(1)))
             if my: self._ay.move_to(float(my.group(1)))
             if mz: self._az.move_to(float(mz.group(1)))
+            if me:
+                dist = float(me.group(1))
+                self._ae += dist
+                self.gcode_feed.append({"byte": 0, "text": f"; Extruded {dist:+.1f}mm"})
+        elif cmd.startswith("SET_GCODE_OFFSET"):
+            import re
+            mz = re.search(r'Z_ADJUST=([0-9.-]+)', cmd)
+            if mz:
+                adj = float(mz.group(1))
+                self._az.pos = round(self._az.pos + adj, 4)
+                self.gcode_feed.append({"byte": 0, "text": f"; Z-Offset adjusted {adj:+.3f}mm"})
+        elif cmd.startswith("M104") or cmd.startswith("M109"):
+            import re
+            ms = re.search(r'S([0-9.-]+)', cmd)
+            if ms:
+                target = float(ms.group(1))
+                self.set_temperature("extruder", target)
+        elif cmd.startswith("M140") or cmd.startswith("M190"):
+            import re
+            ms = re.search(r'S([0-9.-]+)', cmd)
+            if ms:
+                target = float(ms.group(1))
+                self.set_temperature("bed", target)
+        elif cmd.startswith("TURN_OFF_HEATERS"):
+            self.set_temperature("extruder", 0)
+            self.set_temperature("bed", 0)
+        elif cmd.startswith("SET_HEATER_TEMPERATURE"):
+            import re
+            mh = re.search(r'HEATER=([A-Za-z0-9_]+)', cmd)
+            mt = re.search(r'TARGET=([0-9.-]+)', cmd)
+            if mh and mt:
+                self.set_temperature(mh.group(1), float(mt.group(1)))
+        elif cmd.startswith("M82") or cmd.startswith("M83"):
+            mode = "Absolute" if "82" in cmd else "Relative"
+            self.gcode_feed.append({"byte": 0, "text": f"; Extruder mode: {mode}"})
+        elif cmd.startswith("M106"):
+            import re
+            ms = re.search(r'S([0-9.-]+)', cmd)
+            val = float(ms.group(1)) if ms else 255.0
+            pct = round((val / 255.0) * 100)
+            self.gcode_feed.append({"byte": 0, "text": f"; Part cooling fan: {pct}%"})
+        elif cmd.startswith("M107"):
+            self.gcode_feed.append({"byte": 0, "text": "; Part cooling fan: Off"})
+        elif cmd.startswith("M220"):
+            import re
+            ms = re.search(r'S([0-9.-]+)', cmd)
+            if ms:
+                self.gcode_feed.append({"byte": 0, "text": f"; Speed override: {ms.group(1)}%"})
+        elif cmd.startswith("M221"):
+            import re
+            ms = re.search(r'S([0-9.-]+)', cmd)
+            if ms:
+                self.gcode_feed.append({"byte": 0, "text": f"; Flow override: {ms.group(1)}%"})
 
     def _advance_test(self):
         if self._test_wp_idx >= len(self._test_wp):
