@@ -275,3 +275,25 @@ def test_telemetry_worker_live_commands_and_preload():
     assert len(w.live_commands) == 2
     assert w.live_commands[0]["text"] == "G28"
     assert w.live_commands[1]["text"] == "echo: bed leveled"
+
+
+def test_spoolman_set_active_and_save_variable(client, monkeypatch):
+    recorded_posts = []
+    recorded_scripts = []
+
+    def mock_post(url, **kwargs):
+        recorded_posts.append((url, kwargs))
+        m = MagicMock(ok=True, status_code=200, text='{"spool_id": 42}')
+        m.headers = {"Content-Type": "application/json"}
+        return m
+
+    monkeypatch.setattr("requests.post", mock_post)
+    monkeypatch.setattr("api.moonraker_util.run_script", lambda script: recorded_scripts.append(script))
+
+    resp = client.post("/api/v1/printer/spoolman/active", json={"spool_id": 42, "tool_id": 1})
+    assert resp.status_code == 200
+    assert len(recorded_posts) == 1
+    assert "/server/spoolman/spool_id" in recorded_posts[0][0]
+    assert len(recorded_scripts) == 1
+    assert "SAVE_VARIABLE VARIABLE=active_spool_id_t1 VALUE=42" in recorded_scripts[0]
+

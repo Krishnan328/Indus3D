@@ -652,15 +652,18 @@ export const useStore = create((set, get) => ({
     } catch { /* silent — spoolmanConnected already reflects reachability */ }
   },
 
-  setActiveSpool: async (spoolId) => {
+  setActiveSpool: async (spoolId, toolId = null) => {
     try {
       const res = await fetch(`${API}/api/v1/printer/spoolman/active`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spool_id: spoolId }),
+        body: JSON.stringify({ spool_id: spoolId, tool_id: toolId }),
       });
       const data = await res.json();
-      set({ activeSpoolId: data.spool_id ?? null });
+      set((s) => ({
+        activeSpoolId: data.spool_id ?? null,
+        toolSpools: { ...(s.toolSpools || {}), [toolId ?? 0]: data.spool_id ?? null },
+      }));
       return data;
     } catch (e) {
       return { error: e.toString() };

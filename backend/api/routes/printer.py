@@ -1039,15 +1039,24 @@ def spoolman_list_spools():
 @printer_bp.route("/spoolman/active", methods=["POST"])
 def spoolman_set_active():
     """Set (or clear, with spool_id=null) the active spool Moonraker reports
-    filament usage against."""
+    filament usage against. Also persists to Klipper save_variables if available."""
     data = request.get_json(force=True, silent=True) or {}
     spool_id = data.get("spool_id")
+    tool_id = data.get("tool_id")
     try:
         res = requests.post(
             _mr("/server/spoolman/spool_id"),
             json={"spool_id": spool_id},
             timeout=_TIMEOUT_SHORT,
         )
+        # Attempt to persist active_spool_id via save_variables macro if Moonraker is online
+        try:
+            from api import moonraker_util as mu
+            val = spool_id if spool_id is not None else "None"
+            var_name = f"active_spool_id_t{tool_id}" if tool_id is not None else "active_spool_id"
+            mu.run_script(f"SAVE_VARIABLE VARIABLE={var_name} VALUE={val}")
+        except Exception:
+            pass
         return (res.text, res.status_code, {"Content-Type": "application/json"})
     except Exception as e:
         return _forward_error(e, "spoolman set active")
