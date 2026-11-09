@@ -38,7 +38,7 @@ jobs:
     - name: Run Pytest (Safety-Critical Suite)
       working-directory: ./backend
       run: |
-        python -m pytest tests/
+        python -m pytest tests/ ../helpers/filament_sensor/esp8266_sensor_hub/tests/
 
   frontend:
     runs-on: ubuntu-latest

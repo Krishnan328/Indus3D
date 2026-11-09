@@ -1,25 +1,27 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { X, AlertCircle, Loader2 } from "lucide-react";
-import { useStore } from "./store";
+import { useStore, API } from "./store";
 import { useThemeTokens } from "./theme";
 
 export function MacroPromptModal() {
   const [promptData, setPromptData] = useState(null);
   const [submittingCmd, setSubmittingCmd] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
+  const lastPromptId = useRef(null);
 
   const isDarkMode = useStore((s) => s.isDarkMode);
   const t = useThemeTokens();
 
   const fetchPrompt = useCallback(async () => {
     try {
-      const res = await fetch("/api/v1/printer/prompt");
+      const res = await fetch(`${API}/api/v1/printer/prompt`);
       if (res.ok) {
         const data = await res.json();
         if (data && data.active && data.prompt) {
           setPromptData(data.prompt);
-          setErrorMsg(null);
+          if (lastPromptId.current !== data.prompt.id) setErrorMsg(null);
+          lastPromptId.current = data.prompt.id;
         } else {
           setPromptData(null);
         }
@@ -40,14 +42,14 @@ export function MacroPromptModal() {
     setSubmittingCmd(command);
     setErrorMsg(null);
     try {
-      const res = await fetch("/api/v1/printer/prompt/respond", {
+      const res = await fetch(`${API}/api/v1/printer/prompt/respond`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command }),
+        body: JSON.stringify({ command, prompt_id: promptData?.id }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        setPromptData(null);
+        setPromptData((current) => current?.id === promptData?.id ? null : current);
       } else {
         setErrorMsg(data.error || "Failed to execute prompt command");
       }
@@ -60,10 +62,11 @@ export function MacroPromptModal() {
 
   const handleDismiss = async () => {
     try {
-      await fetch("/api/v1/printer/prompt", { method: "DELETE" });
+      const res = await fetch(`${API}/api/v1/printer/prompt`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Could not dismiss the printer prompt");
       setPromptData(null);
-    } catch {
-      setPromptData(null);
+    } catch (error) {
+      setErrorMsg(error.message || "Could not dismiss the printer prompt");
     }
   };
 

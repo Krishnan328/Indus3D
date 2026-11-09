@@ -137,6 +137,7 @@ class _AxisSim:
 # Main simulator
 # ─────────────────────────────────────────────────────────────────────────────
 class SimulatedTelemetryWorker:
+    is_simulator = True
 
     def __init__(self):
         self._last_segment_distance = 0.0

@@ -9,7 +9,8 @@ def client():
     return app.test_client()
 
 def test_settings_sync_get_fallback_local(client, monkeypatch):
-    monkeypatch.setattr("api.system_host.call", MagicMock(side_effect=Exception("Moonraker unreachable")))
+    from api.system_host import Unreachable
+    monkeypatch.setattr("api.system_host.call", MagicMock(side_effect=Unreachable("Moonraker unreachable")))
     resp = client.get("/api/v1/settings/sync")
     assert resp.status_code == 200
     data = resp.json

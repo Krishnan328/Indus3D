@@ -175,7 +175,8 @@ export const useStore = create((set, get) => ({
       const data = await res.json();
       set({ authStatus: { ...data, loading: false } });
     } catch {
-      set({ authStatus: { auth_required: false, authenticated: true, loading: false } });
+      set({ authStatus: { auth_required: true, authenticated: false, loading: false,
+                         error: "Cannot verify authentication while the server is unavailable" } });
     }
   },
 
@@ -554,6 +555,13 @@ export const useStore = create((set, get) => ({
                 bedTarget: td.bed_target ?? td.bedTarget ?? 0,
                 fan_speed: td.fan_speed ?? s.telemetry?.fan_speed ?? 0,
                 state: td.print_state ?? td.state ?? "unknown",
+                filament_used: td.filament_used ?? 0,
+                m73_progress: td.m73_progress ?? null,
+                m73_remaining_s: td.m73_remaining_s ?? null,
+                mmu: td.mmu ?? null,
+                afc: td.afc ?? null,
+                beacon: td.beacon ?? null,
+                cartographer: td.cartographer ?? null,
                 online: td.online ?? true,
                 klippy_state: td.klippy_state || "ready",
                 klippy_connected: td.klippy_connected !== false,
@@ -1695,6 +1703,11 @@ export const useStore = create((set, get) => ({
               time_remaining:  d.time_remaining ?? 0,
               filament_used:   d.filament_used ?? get().telemetry?.filament_used ?? 0,
               m73_progress:    d.m73_progress  ?? get().telemetry?.m73_progress  ?? null,
+              m73_remaining_s: d.m73_remaining_s ?? null,
+              mmu:             d.mmu ?? null,
+              afc:             d.afc ?? null,
+              beacon:          d.beacon ?? null,
+              cartographer:    d.cartographer ?? null,
               speed_factor:    d.speed_factor  ?? 100,
               flow_factor:     d.flow_factor   ?? 100,
               fan_speed:       d.fan_speed     ?? get().telemetry?.fan_speed ?? 0,

@@ -21,13 +21,14 @@ Endpoints (all under /api/v1/printer/prompt, registered in server.py):
 
 import logging
 import threading
+import uuid
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 
 from flask import Blueprint, jsonify, request
 
 from api import moonraker_util
-from api.auth import auth_required
+from api.auth import auth_required, _is_authenticated
 
 prompt_bp = Blueprint("prompt", __name__)
 
@@ -35,6 +36,7 @@ prompt_bp = Blueprint("prompt", __name__)
 
 @dataclass
 class PromptState:
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
     title: str = ""
     text: List[str] = field(default_factory=list)
     buttons: List[Dict] = field(default_factory=list)
@@ -43,10 +45,11 @@ class PromptState:
 
     def to_dict(self) -> dict:
         return {
+            "id": self.id,
             "title": self.title,
-            "text": self.text,
-            "buttons": self.buttons,
-            "footer_buttons": self.footer_buttons,
+            "text": list(self.text),
+            "buttons": [dict(button) for button in self.buttons],
+            "footer_buttons": [dict(button) for button in self.footer_buttons],
             "active": self.active,
         }
 
@@ -67,6 +70,8 @@ def parse_prompt_line(line: str) -> Optional[dict]:
 
     # Strip leading/trailing whitespace and common prefixes from notify_gcode_response
     stripped = line.strip()
+    if stripped.startswith("//"):
+        stripped = stripped[2:].lstrip()
 
     # Handle the case where the line object may carry a 'text' key (from liveCommands)
     # Callers should pass the raw text string.
@@ -181,6 +186,24 @@ class MacroPromptManager:
             cmds += [b["command"] for b in self._active.footer_buttons]
             return cmds
 
+    def claim(self, command, prompt_id=None):
+        with self._lock:
+            prompt = self._active
+            if prompt is None:
+                return None, "No active prompt", 404
+            if prompt_id is not None and prompt_id != prompt.id:
+                return None, "The printer prompt changed; review the current dialog", 409
+            valid = [button["command"] for button in prompt.buttons + prompt.footer_buttons]
+            if command not in valid:
+                return None, "Unknown command for the active prompt", 400
+            self._active = None
+            return prompt, None, 200
+
+    def restore(self, prompt):
+        with self._lock:
+            if self._active is None and self._pending is None:
+                self._active = prompt
+
 
 # Module-level singleton instance
 macro_prompt_manager = MacroPromptManager()
@@ -209,31 +232,33 @@ def respond_to_prompt():
     Requires: auth cookie (when auth is enabled).
     """
     if auth_required():
-        from flask import session
-        if not session.get("authenticated"):
+        if not _is_authenticated():
             return jsonify({"error": "Authentication required"}), 401
 
     data = request.get_json(force=True, silent=True) or {}
-    command = data.get("command", "").strip()
+    if not isinstance(data, dict) or not isinstance(data.get("command"), str):
+        return jsonify({"error": "command must be a string"}), 400
+    command = data["command"].strip()
+    import workers
+    if workers.is_simulator(workers._active_worker):
+        return jsonify({"error": "Live printer prompts are unavailable in simulation mode"}), 409
     if not command:
         return jsonify({"error": "command is required"}), 400
 
-    valid = macro_prompt_manager.get_valid_commands()
-    if not valid:
-        return jsonify({"error": "No active prompt"}), 404
-
-    if command not in valid:
-        return jsonify({"error": f"Unknown command: {command!r}. Valid: {valid}"}), 400
+    prompt, error, status = macro_prompt_manager.claim(command, data.get("prompt_id"))
+    if error:
+        return jsonify({"error": error}), status
 
     try:
-        moonraker_util.run_script(command)
+        moonraker_util.run_script_checked(command)
+    except moonraker_util.ScriptRejected as e:
+        macro_prompt_manager.restore(prompt)
+        return jsonify({"error": str(e)}), 422
     except moonraker_util.MoonrakerError as e:
         logging.warning("MacroPromptManager: Moonraker error running %s: %s", command, e)
-        # Still clear the prompt — user clicked a button
-        macro_prompt_manager.close()
+        macro_prompt_manager.restore(prompt)
         return jsonify({"error": str(e)}), 502
 
-    macro_prompt_manager.close()
     return jsonify({"status": "ok", "command": command})
 
 
@@ -244,8 +269,7 @@ def dismiss_prompt():
     Requires: auth cookie (when auth is enabled).
     """
     if auth_required():
-        from flask import session
-        if not session.get("authenticated"):
+        if not _is_authenticated():
             return jsonify({"error": "Authentication required"}), 401
 
     macro_prompt_manager.close()

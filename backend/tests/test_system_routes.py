@@ -165,6 +165,15 @@ def test_info_merges_the_moonraker_sections(client, moon):
     assert b["simulated"] is False and all(s["ok"] for s in b["sections"].values())
 
 
+def test_live_worker_uses_real_system_information(client, moon, monkeypatch):
+    import workers
+    from workers.telemetry_worker import TelemetryWorker
+    monkeypatch.setattr(workers, "_active_worker", TelemetryWorker.__new__(TelemetryWorker))
+    r = client.get("/api/v1/system/info")
+    assert r.status_code == 200 and r.get_json()["host"]["hostname"] == "voron"
+    assert any(call[1] == "/machine/system_info" for call in moon.calls)
+
+
 def test_info_degrades_per_section_and_does_not_fail(client, moon):
     del moon.routes[("GET", "/machine/proc_stats")]
     moon.routes[("GET", "/printer/info")] = Resp(503, "Klippy not ready")
@@ -512,6 +521,7 @@ def sim(monkeypatch):
     import workers
 
     class Sim:
+        is_simulator = True
         latest = {"print_state": "standby"}
 
         def inject_gcode(self, g):

@@ -31,7 +31,8 @@ export function calculateProgressAndEta(method = ETA_METHODS.WEIGHTED, telemetry
 
   // 2. Filament estimation
   const filUsed = Number(telemetry.filament_used || 0);
-  const filTotal = Number(metadata?.filament_total || metadata?.filament_weight_total || 0);
+  // Klipper reports consumed filament length in mm, not grams.
+  const filTotal = Number(metadata?.filament_total || 0);
   let filProg = 0;
   let filRemaining = null;
   if (filTotal > 0 && filUsed > 0) {

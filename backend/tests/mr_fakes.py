@@ -50,7 +50,9 @@ class FakeMR:
         }
 
     def __call__(self, method, url, **kw):
-        path = url.split("7125", 1)[-1] if "7125" in url else url
+        from urllib.parse import urlsplit
+        parsed = urlsplit(url)
+        path = parsed.path + ("?" + parsed.query if parsed.query else "")
         self.calls.append((method, path, kw))
         r = self.routes.get((method, path))
         if r is None:

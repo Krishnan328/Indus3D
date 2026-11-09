@@ -56,8 +56,8 @@ class JobEdges:
 
     def step(self, snap: dict):
         state = snap.get("print_state")
-        printing = state == "printing"
-        was = self.prev_state == "printing"
+        printing = state in ("printing", "paused")
+        was = self.prev_state in ("printing", "paused")
         switched = printing and was and is_new_job(self.ref, snap)
         ended = None
         if was and not printing:

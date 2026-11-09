@@ -564,7 +564,7 @@ def set_temperature():
                 t_ext = max(0.0, min(350.0, t_ext))
                 if w and hasattr(w, "set_temperature"):
                     w.set_temperature("extruder", t_ext)
-                elif w and hasattr(w, "inject_gcode"):
+                elif workers.is_simulator(w):
                     w.inject_gcode(f"M104 S{t_ext:.1f}")
                 else:
                     requests.post(_mr("/printer/gcode/script"), params={"script": f"M104 S{t_ext:.1f}"}, timeout=_TIMEOUT_SHORT)
@@ -578,7 +578,7 @@ def set_temperature():
                 t_bed = max(0.0, min(150.0, t_bed))
                 if w and hasattr(w, "set_temperature"):
                     w.set_temperature("bed", t_bed)
-                elif w and hasattr(w, "inject_gcode"):
+                elif workers.is_simulator(w):
                     w.inject_gcode(f"M140 S{t_bed:.1f}")
                 else:
                     requests.post(_mr("/printer/gcode/script"), params={"script": f"M140 S{t_bed:.1f}"}, timeout=_TIMEOUT_SHORT)
@@ -613,7 +613,7 @@ def set_temperature():
     if w and hasattr(w, "set_temperature"):
         w.set_temperature(heater_key, target_val)
         return jsonify({"status": "ok", "heater": heater_key, "target": target_val, "mode": "sim"})
-    elif w and hasattr(w, "inject_gcode"):
+    elif workers.is_simulator(w):
         w.inject_gcode(gcode)
         return jsonify({"status": "ok", "heater": heater_key, "target": target_val, "mode": "sim"})
 
@@ -648,7 +648,7 @@ def firmware_restart():
     try:
         import workers
         w = workers._active_worker
-        if w and hasattr(w, "inject_gcode"):
+        if workers.is_simulator(w):
             w.inject_gcode("FIRMWARE_RESTART")
             return jsonify({"status": "ok", "mode": "sim"})
 
@@ -675,7 +675,7 @@ def printer_info():
     try:
         import workers
         w = workers._active_worker
-        if w and hasattr(w, "inject_gcode"):
+        if workers.is_simulator(w):
             klippy_state = getattr(w, "_klippy_state", "ready")
             klippy_msg = getattr(w, "_klippy_state_message", "")
             return jsonify({
@@ -705,7 +705,7 @@ def restart():
     try:
         import workers
         w = workers._active_worker
-        if w and hasattr(w, "inject_gcode"):
+        if workers.is_simulator(w):
             w.inject_gcode("RESTART")
             return jsonify({"status": "ok", "mode": "sim"})
 
@@ -722,7 +722,7 @@ def emergency_stop():
     try:
         import workers
         w = workers._active_worker
-        if w and hasattr(w, "inject_gcode"):
+        if workers.is_simulator(w):
             w.inject_gcode("M112")
             return jsonify({"status": "ok", "mode": "sim"})
 
@@ -1041,22 +1041,32 @@ def spoolman_set_active():
     """Set (or clear, with spool_id=null) the active spool Moonraker reports
     filament usage against. Also persists to Klipper save_variables if available."""
     data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required"}), 400
     spool_id = data.get("spool_id")
     tool_id = data.get("tool_id")
+    if spool_id is not None and (isinstance(spool_id, bool) or not isinstance(spool_id, int) or spool_id < 1):
+        return jsonify({"error": "spool_id must be a positive integer or null"}), 400
+    if tool_id is not None and (isinstance(tool_id, bool) or not isinstance(tool_id, int) or not 0 <= tool_id <= 31):
+        return jsonify({"error": "tool_id must be an integer from 0 to 31"}), 400
     try:
         res = requests.post(
             _mr("/server/spoolman/spool_id"),
             json={"spool_id": spool_id},
             timeout=_TIMEOUT_SHORT,
         )
+        if not res.ok:
+            return (res.text, res.status_code, {"Content-Type": "application/json"})
         # Attempt to persist active_spool_id via save_variables macro if Moonraker is online
         try:
             from api import moonraker_util as mu
             val = spool_id if spool_id is not None else "None"
             var_name = f"active_spool_id_t{tool_id}" if tool_id is not None else "active_spool_id"
-            mu.run_script(f"SAVE_VARIABLE VARIABLE={var_name} VALUE={val}")
-        except Exception:
-            pass
+            saved = mu.run_script(f"SAVE_VARIABLE VARIABLE={var_name} VALUE={val}")
+            if saved is not None and not saved.ok:
+                logging.warning("Active spool changed, but Klipper did not persist its identifier")
+        except Exception as e:
+            logging.warning("Active spool changed, but persistence is unavailable: %s", type(e).__name__)
         return (res.text, res.status_code, {"Content-Type": "application/json"})
     except Exception as e:
         return _forward_error(e, "spoolman set active")
@@ -1133,7 +1143,7 @@ def run_macro(name):
         return jsonify({"error": "params must be an object"}), 400
     import workers
     w = workers._active_worker
-    sim = bool(w and hasattr(w, "inject_gcode"))
+    sim = workers.is_simulator(w)
     try:
         canonical = None
         if not sim:

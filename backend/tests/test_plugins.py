@@ -53,11 +53,24 @@ def test_priority_order_and_isolation():
     assert seen == ["early", "late"]          # the raising hook did not stop the others
 
 
-def test_filter_failure_leaves_commands_unchanged():
+def test_filter_failure_blocks_corrections():
     r = HookRegistry()
     r.on("commands.filter", lambda cmds, ctx: 1 / 0)
     r.on("commands.filter", lambda cmds, ctx: [c for c in cmds if c != "M220 S90"])
-    assert r.apply("commands.filter", ["M221 S95", "M220 S90"], {}) == ["M221 S95"]
+    assert r.apply("commands.filter", ["M221 S95", "M220 S90"], {}) == []
+
+
+@pytest.mark.parametrize("failure", ["raises", "invalid_return"])
+def test_filter_failure_keeps_emergency_commands_and_records_vetoes(failure):
+    r = HookRegistry()
+    def broken(commands, ctx):
+        if failure == "raises":
+            raise RuntimeError("failed safety filter")
+        return None
+    r.on("commands.filter", broken)
+    ctx = {}
+    assert r.apply("commands.filter", ["M104 S210", "PAUSE", "M112"], ctx) == ["PAUSE", "M112"]
+    assert ctx["vetoes"][0]["command"] == "M104 S210"
 
 
 def test_unknown_hook_rejected():

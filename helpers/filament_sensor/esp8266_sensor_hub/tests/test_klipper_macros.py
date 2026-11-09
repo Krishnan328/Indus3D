@@ -3,7 +3,6 @@ a mock `printer` and executes the result with a tiny G-code interpreter, so the 
 even though no printer is attached."""
 import ast
 import configparser
-import math
 import re
 from pathlib import Path
 
@@ -233,106 +232,19 @@ def test_reset_clears_the_stale_flag_only_when_not_paused():
     assert p.vars["crash_active"] is False
 
 
-# ── shaper sweep ──────────────────────────────────────────────────────────────
-def sweep(**kw):
-    p = Printer(print_stats={"state": "standby"})
-    p.vars["printer_cfg"] = kw.pop("cfg", "/cfg/printer.cfg")
-    for k, v in kw.pop("vars", {}).items():
-        p.vars[k] = v
-    p.status.update(kw.pop("status", {}))
-    p.run("BED_SHAPER_CALIBRATE_Y", **kw)
-    return p
+# The shell extension is synchronous: no sweep may run until synchronized capture is implemented.
+@pytest.mark.parametrize("state", ["standby", "printing", "paused", "complete"])
+@pytest.mark.parametrize("apply", [0, 1])
+def test_shaper_sweep_is_disabled_without_motion_or_persistence(state, apply):
+    p = Printer(print_stats={"state": state})
+    with pytest.raises(MacroError, match="sweep disabled"):
+        p.run("BED_SHAPER_CALIBRATE_Y", APPLY=apply)
+    assert p.out == []
 
 
-def moves(p):
-    """[(accel, [signed Y moves])] per frequency step."""
-    steps, cur = [], None
-    for l in p.out:
-        m = re.match(r"SET_VELOCITY_LIMIT ACCEL=(\d+)", l)
-        if m:
-            cur = (int(m.group(1)), [])
-            steps.append(cur)
-        m = re.match(r"G1 Y(-?[\d.]+) F(\d+)", l)
-        if m and cur:
-            cur[1].append(float(m.group(1)))
-    return steps[:-1]                                                        # the last one restores the limits
-
-
-def test_sweep_order_capture_before_motion_and_restores_everything():
-    p = sweep()
-    cap = p.index("RUN_SHELL_COMMAND CMD=run_bed_shaper")
-    assert not p.has("SET_INPUT_SHAPER")                       # no [input_shaper] configured: nothing to switch
-    assert cap < p.index("G4 P1500") < p.index("G1 Y")
-    assert p.has("SET_VELOCITY_LIMIT ACCEL=3000.0 MINIMUM_CRUISE_RATIO=0.5")
-    last_move = max(i for i, l in enumerate(p.out) if l.startswith("G1 Y"))
-    assert p.index("SET_VELOCITY_LIMIT ACCEL=3000.0", last_move) > last_move       # limits restored after the sweep
-    assert p.has("RESTORE_GCODE_STATE NAME=BED_SHAPER")
-    assert p.has("M400")
-
-
-def test_sweep_disables_and_restores_an_active_shaper():
-    p = sweep(status={"input_shaper": {"shaper_type_x": "zv", "shaper_freq_x": 60.0, "shaper_type_y": "mzv", "shaper_freq_y": 40.0}})
-    assert p.has("SET_INPUT_SHAPER SHAPER_FREQ_X=0 SHAPER_FREQ_Y=0")
-    assert p.has("SET_INPUT_SHAPER SHAPER_FREQ_X=60.0 SHAPER_FREQ_Y=40.0 SHAPER_TYPE_Y=mzv")
-    assert p.index("SET_INPUT_SHAPER SHAPER_FREQ_X=0") < p.index("G1 Y")
-
-
-def test_sweep_homes_only_when_needed():
-    assert not sweep().has("G28")
-    assert sweep(status={"toolhead": {**Printer().status["toolhead"], "homed_axes": ""}}).has("G28")
-
-
-def test_sweep_physics_each_halfcycle_lasts_half_a_period():
-    p = sweep()
-    steps = moves(p)
-    freqs = list(range(5, 121, 5))
-    assert len(steps) == len(freqs)
-    total = 0.0
-    for (accel, ys), f in zip(steps, freqs):
-        assert accel <= 7000 * 1.001
-        assert abs(sum(ys)) < 1e-9                                           # returns to where it started
-        assert max(abs(y) for y in ys) <= 3.0 + 1e-9
-        assert len(ys) // 2 >= 2
-        L = abs(ys[0])
-        half = 2 * math.sqrt(L / accel)                                      # triangular velocity profile
-        assert half == pytest.approx(1 / (2 * f), rel=0.03)
-        total += len(ys) // 2 / f
-    assert total < 12
-
-
-def test_sweep_capture_parameters_match_the_cli():
-    p = sweep(cfg="/var/lib/moonraker/config/printer.cfg", APPLY=1)
-    cmd = next(l for l in p.out if "CMD=run_bed_shaper" in l)
-    params = re.search(r'PARAMS="([^"]*)"', cmd).group(1).split()
-    args = esp_hub_ctl.build_parser().parse_args(["shaper-capture"] + params)
-    assert args.analyze and args.axis == "Y" and args.rate == 1600
-    assert 5 <= args.duration <= 15
-    assert args.apply_to == "/var/lib/moonraker/config/printer.cfg"
-    no_apply = next(l for l in sweep().out if "CMD=run_bed_shaper" in l)
-    assert "--apply-to" not in no_apply
-
-
-def test_sweep_refuses_unsafe_or_impossible_requests():
-    with pytest.raises(MacroError, match="Not while"):
-        Printer().run("BED_SHAPER_CALIBRATE_Y")
-    with pytest.raises(MacroError, match="at most 15"):
-        sweep(vars={"sweep_step_hz": 1})
-    with pytest.raises(MacroError, match="variable_printer_cfg"):
-        sweep(cfg="", APPLY=1)
-    p = Printer(print_stats={"state": "standby"})
-    p.status["configfile"]["config"] = {}
-    with pytest.raises(MacroError, match="run_bed_shaper"):
-        p.run("BED_SHAPER_CALIBRATE_Y")
-
-
-def test_sweep_uses_accel_to_decel_on_older_klipper():
-    th = {k: v for k, v in Printer().status["toolhead"].items() if k != "minimum_cruise_ratio"}
-    th["max_accel_to_decel"] = 1500.0
-    p = sweep(status={"toolhead": th})
-    assert any("ACCEL_TO_DECEL=" in l for l in p.out) and not any("MINIMUM_CRUISE_RATIO" in l for l in p.out)
-    assert p.has("SET_VELOCITY_LIMIT ACCEL=3000.0 ACCEL_TO_DECEL=1500.0")
-
-
+def test_offline_capture_cli_stays_available():
+    args = esp_hub_ctl.build_parser().parse_args(["shaper-capture", "--duration", "7", "--analyze"])
+    assert args.duration == 7 and args.analyze and args.apply_to is None
 # ── consistency with the shell command file ────────────────────────────────────────────
 def test_every_shell_command_the_macros_call_is_defined():
     macros = (KLIPPER / "bed_sensor_hub.cfg").read_text()

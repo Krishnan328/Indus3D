@@ -22,7 +22,12 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=5001 \
     INDUS3D_ENV=production \
-    INDUS3D_FRONTEND_DIR=/app/frontend/dist
+    INDUS3D_FRONTEND_DIR=/app/frontend/dist \
+    DB_PATH=/app/data/db/flight_record.db \
+    INDUS3D_CONFIG_DIR=/app/data/config \
+    INDUS3D_CONFIG_PATH=/app/data/config/indus_overrides.cfg \
+    FLASK_SECRET_KEY_PATH=/app/data/.flask_secret_key \
+    TIMELAPSE_DIR=/app/data/timelapse
 
 WORKDIR /app
 
@@ -46,7 +51,8 @@ COPY --from=frontend-builder /app/frontend/dist /app/frontend/dist
 # Security: Create non-root system user
 RUN groupadd -g 1000 indus3d && \
     useradd -u 1000 -g indus3d -m -s /bin/bash indus3d && \
-    mkdir -p /app/data && \
+    mkdir -p /app/data/config /app/data/db /app/data/timelapse && \
+    cp /app/config/indus_overrides.cfg /app/data/config/indus_overrides.cfg && \
     chown -R indus3d:indus3d /app
 
 USER indus3d
@@ -54,6 +60,6 @@ USER indus3d
 EXPOSE 5001
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
-  CMD curl -f http://127.0.0.1:5001/api/v1/twin/state || exit 1
+  CMD curl -f http://127.0.0.1:5001/api/v1/health || exit 1
 
 CMD ["python", "main.py"]

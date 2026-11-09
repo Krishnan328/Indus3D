@@ -140,13 +140,13 @@ def test_reprint_job_by_id_and_filename(client):
         r = client.post("/api/v1/history/reprint", json={"id": jid})
         assert r.status_code == 200
         assert r.get_json()["filename"] == "reprint_me.gcode"
-        mock_run.assert_called_with('SDCARD_PRINT_FILE FILENAME="reprint_me.gcode"')
+        mock_run.assert_called_with('SDCARD_PRINT_FILE FILENAME="reprint_me.gcode"', timeout=10)
 
     with mock.patch("api.moonraker_util.run_script") as mock_run:
         # Reprint by filename
         r = client.post("/api/v1/history/reprint", json={"filename": "direct.gcode"})
         assert r.status_code == 200
-        mock_run.assert_called_with('SDCARD_PRINT_FILE FILENAME="direct.gcode"')
+        mock_run.assert_called_with('SDCARD_PRINT_FILE FILENAME="direct.gcode"', timeout=10)
 
 
 def test_reprint_rejects_malformed_filename(client):

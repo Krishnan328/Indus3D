@@ -80,7 +80,7 @@ class RunRecorder:
     # -- hooks --------------------------------------------------------------
     def tick(self, snap, ctx):
         now = ctx.get("now", time.time())
-        printing = snap.get("print_state") == "printing"
+        printing = snap.get("print_state") in ("printing", "paused")
         if printing and self._printing and is_new_job(self._ref, snap):
             # queued job right behind the previous one (no non-printing tick in between): close the old
             # run and open a new one so commands/vetoes/corrections are not mixed across prints

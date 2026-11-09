@@ -1,0 +1,2 @@
+# Synthetic Telegram fixture in the original backup-exclusion test. New occurrences still fail.
+f6a5255b2664af2d59d93c38add23eee1e393fa1:backend/tests/test_config_backup.py:indus3d-telegram-bot-token:120

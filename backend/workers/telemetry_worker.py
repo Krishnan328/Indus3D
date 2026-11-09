@@ -66,6 +66,8 @@ def _energy_wh() -> float:
 
 
 class TelemetryWorker:
+    is_simulator = False
+
     def __init__(self):
         self.latest: dict = {}
         # live_commands: last 100 commands sent (quality controller + manual + moonraker responses)
@@ -886,6 +888,10 @@ class TelemetryWorker:
                 "time_remaining":  time_remaining,
                 "filament_used":   round(float(ps.get("filament_used", 0.0) or 0.0), 2),
                 "m73_progress":    round(float(ds.get("progress", 0.0) or 0.0) * 100, 1),
+                "mmu":            data.get("mmu"),
+                "afc":            data.get("afc"),
+                "beacon":         data.get("beacon"),
+                "cartographer":   data.get("cartographer"),
                 "speed_factor":    speed_factor,
                 "flow_factor":     flow_factor,
                 "fan_speed":       round(fan.get("speed", 0.0) * 100, 1),

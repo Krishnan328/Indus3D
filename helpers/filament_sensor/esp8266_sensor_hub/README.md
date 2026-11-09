@@ -27,10 +27,11 @@ A host daemon owns the serial port and connects the hub to Klipper, Moonraker an
    beeps). `BED_CRASH_RESUME` reheats to the saved targets, re-primes, clears the latch and resumes. A crash while no
    print is running is logged and the latch is cleared; the handler never moves an idle printer.
 2. **Chamber telemetry.** One JSON line per second; a missing BME280 is reported as `null`, never as 0.
-3. **Y input shaping.** `BED_SHAPER_CALIBRATE_Y` sweeps the bed 5-120 Hz while the hub streams 15-byte checksummed
-   frames at up to 1600 Hz; the analyzer estimates the resonance and damping, evaluates ZV/MZV/ZVD/EI/2HUMP_EI/3HUMP_EI,
-   derives the maximum acceleration from the smoothing limit, writes a plot and a config snippet, and can update
-   `[input_shaper]` in `printer.cfg` (backup first).
+3. **Y input shaping.** The automatic `BED_SHAPER_CALIBRATE_Y` macro is disabled: the shell extension waits
+   for capture completion before running the sweep, producing stationary-noise measurements. It now rejects
+   every request before moving or changing settings. Offline capture and analysis remain available; use
+   Klipper's native calibration with a supported accelerometer for printer tuning. Re-enabling the ESP sweep
+   requires synchronized capture, coverage checks and supervised hardware validation.
 4. **Indus3D.** Samples go into the SQLite table `telemetry_samples`; chamber values feed `/api/v1/environment`; a crash
    raises a notification and holds corrective commands until the latch is cleared; a dashboard card shows it all.
 

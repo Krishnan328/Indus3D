@@ -118,6 +118,17 @@ def run_script(script: str, timeout: float = 10) -> requests.Response:
         raise MoonrakerError(f"Moonraker unreachable: {e}") from e
 
 
+class ScriptRejected(MoonrakerError):
+    """Klipper received a script but refused it."""
+
+
+def run_script_checked(script: str, timeout: float = 10) -> requests.Response:
+    response = run_script(script, timeout=timeout)
+    if not response.ok:
+        raise ScriptRejected("Klipper rejected the command")
+    return response
+
+
 def query_objects(names: List[str]) -> dict:
     """``{object: {field: value}}`` for the given object names (spaces are URL-encoded)."""
     if not names:

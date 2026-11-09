@@ -29,6 +29,9 @@ npm run dev
 
 Run `npm run lint` and `npm run build` from `frontend/` before opening a pull request. For backend changes, verify the relevant Flask route or simulator scenario locally.
 
+Install the [secret-scanning commit hook](docs/SECRET_SCANNING.md) before committing.
+The same pinned scanner runs in CI; new findings must be reviewed, not bypassed with broad exclusions.
+
 ## Architecture rules
 
 These rules protect the design and are not optional:

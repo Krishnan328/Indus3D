@@ -137,6 +137,7 @@ def test_simulator_mode_never_notifies(tmp_path, monkeypatch):
     import workers
 
     class Sim:
+        is_simulator = True
         def inject_gcode(self, g):
             pass
     monkeypatch.setattr(workers, "_active_worker", Sim())

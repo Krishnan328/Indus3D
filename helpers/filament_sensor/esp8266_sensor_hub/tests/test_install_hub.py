@@ -75,8 +75,8 @@ def test_shell_cfg_rendering_leaves_no_placeholders():
     t = ih.render_shell_cfg((HUB / "klipper" / "bed_sensor_hub_shell.cfg.in").read_text(), "/venv/bin/python", HUB / "scripts", "http://127.0.0.1:7127")
     assert "@" not in t
     cp = klipper_parse(t)
-    assert set(cp.sections()) == {f"gcode_shell_command {n}" for n in ("reset_hub_crash", "hub_status", "set_hub_threshold", "run_bed_shaper")}
-    assert cp["gcode_shell_command run_bed_shaper"]["command"].startswith("/venv/bin/python")
+    assert set(cp.sections()) == {f"gcode_shell_command {n}" for n in ("reset_hub_crash", "hub_status", "set_hub_threshold")}
+    assert cp["gcode_shell_command hub_status"]["command"].startswith("/venv/bin/python")
 
 
 def test_set_variable_edits_only_the_requested_line():

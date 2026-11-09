@@ -44,8 +44,11 @@ def get_history():
     params = []
 
     if status and status != "all":
-        where_clauses.append("LOWER(status) = ?")
-        params.append(status)
+        if status in ("complete", "completed"):
+            where_clauses.append("LOWER(status) IN ('complete', 'completed')")
+        else:
+            where_clauses.append("LOWER(status) = ?")
+            params.append(status)
 
     if search:
         where_clauses.append("filename LIKE ?")
@@ -82,6 +85,8 @@ def get_history():
     jobs = []
     for row in c.fetchall():
         item = dict(zip(valid_cols, row))
+        if str(item.get("status", "")).lower() == "complete":
+            item["status"] = "completed"
         pts = item.get("print_time_seconds") or 0.0
         item["print_time_formatted"] = _format_seconds(pts)
         jobs.append(item)
@@ -102,7 +107,7 @@ def get_history():
     c.execute("SELECT LOWER(status), COUNT(*) FROM print_history GROUP BY LOWER(status)")
     status_counts = dict(c.fetchall())
 
-    completed = status_counts.get("completed", 0)
+    completed = status_counts.get("completed", 0) + status_counts.get("complete", 0)
     cancelled = status_counts.get("cancelled", 0)
     error = status_counts.get("error", 0)
     total_prints = tot_row[0]
@@ -146,8 +151,11 @@ def export_csv():
     where_clauses = []
     params = []
     if status and status != "all":
-        where_clauses.append("LOWER(status) = ?")
-        params.append(status)
+        if status in ("complete", "completed"):
+            where_clauses.append("LOWER(status) IN ('complete', 'completed')")
+        else:
+            where_clauses.append("LOWER(status) = ?")
+            params.append(status)
     if search:
         where_clauses.append("filename LIKE ?")
         params.append(f"%{search}%")
@@ -198,6 +206,8 @@ def export_csv():
 def reprint_job():
     """Start printing a file from history."""
     data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "JSON object required"}), 400
     filename = data.get("filename")
     job_id = data.get("id")
 
@@ -214,12 +224,25 @@ def reprint_job():
         return jsonify({"error": "filename or valid job id required"}), 400
 
     filename = filename.strip()
-    if "\n" in filename or "\r" in filename or ";" in filename:
+    if any(char in filename for char in ('\n', '\r', ';', '"', '\\')) or any(ord(c) < 32 for c in filename):
         return jsonify({"error": "Invalid characters in filename"}), 400
+    from api.routes.files import clean_rel, PathError
+    try:
+        filename = clean_rel(filename, allow_empty=False)
+    except PathError as e:
+        return jsonify({"error": str(e)}), 400
+    from api.routes.printer import _printer_is_busy
+    if _printer_is_busy():
+        return jsonify({"error": "A print is already running or paused"}), 409
+    import workers
+    if workers.is_simulator(workers._active_worker):
+        return jsonify({"error": "Use simulation controls to start a simulated print"}), 409
 
     # Execute print start via Moonraker SDCARD_PRINT_FILE
     try:
-        moonraker_util.run_script(f'SDCARD_PRINT_FILE FILENAME="{filename}"')
+        moonraker_util.run_script_checked(f'SDCARD_PRINT_FILE FILENAME="{filename}"')
+    except moonraker_util.ScriptRejected as e:
+        return jsonify({"error": str(e)}), 422
     except moonraker_util.MoonrakerError as e:
         return jsonify({"error": f"Failed to start print: {e}"}), 502
 

@@ -170,7 +170,7 @@ def active_print() -> Tuple[bool, str]:
 def _is_simulator() -> bool:
     import workers
     w = workers._active_worker
-    return w is not None and hasattr(w, "gcode_str")
+    return workers.is_simulator(w)
 
 
 # ── Backends ──────────────────────────────────────────────────────────────────

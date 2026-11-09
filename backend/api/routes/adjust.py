@@ -95,7 +95,7 @@ def _body() -> dict:
 def _sim():
     import workers
     w = workers._active_worker
-    return w if (w and hasattr(w, "inject_gcode")) else None
+    return w if workers.is_simulator(w) else None
 
 
 def _busy() -> bool:

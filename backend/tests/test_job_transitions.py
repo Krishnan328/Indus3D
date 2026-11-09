@@ -50,6 +50,38 @@ def test_job_edges_back_to_back_is_end_then_start_in_one_tick():
     assert e.step(S("printing", "b", 0)) == ("complete", True, True)     # same file, queue multiply
 
 
+@pytest.mark.parametrize("terminal", ["complete", "cancelled", "error"])
+def test_job_edges_pause_resume_is_one_job(terminal):
+    e = JobEdges()
+    assert e.step(S(dur=10)) == (None, True, False)
+    assert e.step(S("paused", dur=10)) == (None, False, False)
+    assert e.step(S("paused", dur=10)) == (None, False, False)
+    assert e.step(S(dur=11)) == (None, False, False)
+    assert e.step(S(terminal, dur=12)) == (terminal, False, False)
+
+
+def test_cancel_while_paused_finishes_once():
+    e = JobEdges()
+    e.step(S(dur=10))
+    e.step(S("paused", dur=10))
+    assert e.step(S("cancelled", dur=10)) == ("cancelled", False, False)
+    assert e.step(S("cancelled", dur=10)) == (None, False, False)
+
+
+def test_run_recorder_keeps_paused_job():
+    from plugins.run_recorder import RunRecorder
+    r = RunRecorder(archive=False)
+    done = []
+    r.on_finish(done.append)
+    r.tick(S(dur=10), {"now": 1})
+    job_id = r.current["id"]
+    r.tick(S("paused", dur=10), {"now": 2})
+    r.tick(S(dur=11), {"now": 3})
+    assert r.current["id"] == job_id and done == []
+    r.tick(S("complete", dur=12), {"now": 4})
+    assert len(done) == 1 and done[0]["final_state"] == "complete"
+
+
 # ── run recorder ──────────────────────────────────────────────────────────────
 def test_run_recorder_splits_back_to_back_runs():
     from plugins.run_recorder import RunRecorder
@@ -179,6 +211,18 @@ def test_worker_normal_lifecycle_unchanged(worker):
     assert seen["finished"] == ["complete"]
     assert step(w, seen, "printing", "b.gcode", 1) == ["printing"]
     assert seen["started"] == ["a.gcode", "b.gcode"] and seen["finished"] == ["complete"]
+
+
+def test_worker_pause_resume_does_not_finalize_or_reset_baselines(worker):
+    w, seen = worker
+    step(w, seen, "printing", "a.gcode", 100)
+    baselines = (w._print_start_time, w._print_start_fil_m, w._print_start_wh)
+    step(w, seen, "paused", "a.gcode", 100)
+    step(w, seen, "printing", "a.gcode", 101)
+    assert seen["started"] == ["a.gcode"] and seen["finished"] == []
+    assert baselines == (w._print_start_time, w._print_start_fil_m, w._print_start_wh)
+    step(w, seen, "complete", "a.gcode", 102)
+    assert seen["finished"] == ["complete"]
 
 
 def test_worker_history_row_names_the_job_that_ended(worker):

@@ -137,7 +137,7 @@ def has_klipper_chamber(names) -> bool:
 def _simulator():
     import workers
     w = workers._active_worker
-    return bool(w and hasattr(w, "inject_gcode"))
+    return workers.is_simulator(w)
 
 
 # ── GET /thermal_history ──────────────────────────────────────────────────────

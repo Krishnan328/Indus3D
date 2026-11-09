@@ -5,10 +5,16 @@ target/
 **/target/
 .venv/
 **/.venv/
+/.venv-tools/
+/.cache-pre-commit/
 
 # Runtime data and credentials — never commit a printer's history, logs,
 # reports, or Flask session secret.
 /backend/.flask_secret_key
+.env
+.env.*
+!.env.example
+!.env.*.example
 /backend/db/flight_record.db
 /backend/logs/
 /backend/reports/

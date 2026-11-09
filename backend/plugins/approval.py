@@ -14,7 +14,8 @@ toggle is not persisted). When on:
 * a held command expires after INDUS3D_APPROVAL_TTL_S seconds (default 30):
   corrections are time-sensitive, so a stale one is never sent,
 * approving sends it through the same path as an automatic command and
-  records it in the audit trail like one.
+  records it in the audit trail like one. Approval requires a printing job,
+  enabled autopilot and telemetry from the last two seconds.
 
 GET  /api/v1/plugins/approval
 POST /api/v1/plugins/approval/mode            {"enabled": true|false}
@@ -27,7 +28,8 @@ import threading
 import time
 from collections import OrderedDict, deque
 
-from core.plugin_hooks import ctx_veto, hooks
+from core.plugin_hooks import ctx_veto
+from core.job_tracker import is_new_job, job_ref
 from plugins.arbiter import family_of
 
 PLUGIN_INFO = {
@@ -36,6 +38,7 @@ PLUGIN_INFO = {
 }
 
 ALWAYS_PASS = {"PAUSE", "M112", "CANCEL_PRINT"}
+MAX_CONTEXT_AGE_S = 2.0
 
 
 def _truthy(v) -> bool:
@@ -48,7 +51,7 @@ class Approval:
         self.ttl_s = float(os.environ.get("INDUS3D_APPROVAL_TTL_S", 30)) if ttl_s is None else ttl_s
         self.pending: "OrderedDict[int, dict]" = OrderedDict()
         self.history = deque(maxlen=100)
-        self.sender = None
+        self._context = None
         self._next = 1
         self._lock = threading.Lock()
 
@@ -57,14 +60,25 @@ class Approval:
             self.history.appendleft({**self.pending.pop(pid), "outcome": "expired", "at": now})
 
     # hook ---------------------------------------------------------------
+    def tick(self, snap, ctx):
+        # The worker does not run a quality cycle while paused or idle.
+        with self._lock:
+            if self._context is not None:
+                if ctx.get("source") != self._context.get("source"):
+                    self._context = None
+                else:
+                    self._context.update(snap=dict(snap), now=ctx.get("now", time.time()))
+
     def filter(self, commands, ctx):
+        if ctx.get("approved"):
+            return commands
+        with self._lock:
+            self._context = dict(ctx)
         if not self.enabled:
             return commands
         now = ctx.get("now", time.time())
         kept = []
         with self._lock:
-            if ctx.get("send"):
-                self.sender = ctx["send"]
             self._expire(now)
             for cmd in commands:
                 token = cmd.strip().split(None, 1)[0].upper() if cmd.strip() else ""
@@ -77,13 +91,13 @@ class Approval:
                 pid = self._next
                 self._next += 1
                 self.pending[pid] = {"id": pid, "command": cmd, "family": fam, "ts": now,
-                                     "source": ctx.get("source")}
+                                     "source": ctx.get("source"), "job": job_ref(ctx.get("snap") or {})}
                 ctx_veto(ctx, cmd, "approval", f"awaiting approval (#{pid})")
         return kept
 
     # actions ------------------------------------------------------------
     def decide(self, pid: int, approve: bool, now=None):
-        now = now or time.time()
+        now = time.time() if now is None else now
         with self._lock:
             self._expire(now)
             item = self.pending.pop(pid, None)
@@ -92,18 +106,30 @@ class Approval:
             if not approve:
                 self.history.appendleft({**item, "outcome": "rejected", "at": now})
                 return item, None
-            sender = self.sender
-        if sender is None:
-            return None, "no printer connection available to send with"
-        try:
-            sent = sender(item["command"])
-            ok = True if sent is None else bool(sent)
-        except Exception:  # noqa: BLE001
-            ok = False
+            ctx = dict(self._context or {})
+        controller = ctx.get("controller")
+        snap = ctx.get("snap") or {}
+        safe = (self.enabled and ctx.get("send")
+                and 0 <= now - ctx.get("now", 0) <= MAX_CONTEXT_AGE_S
+                and bool(getattr(controller, "auto_pilot", ctx.get("autopilot", False)))
+                and snap.get("print_state") == "printing"
+                and item["source"] == ctx.get("source")
+                and not is_new_job(item["job"], snap))
+        if not safe:
+            with self._lock:
+                self.history.appendleft({**item, "outcome": "blocked", "at": now})
+            return None, "approval blocked: fresh telemetry, autopilot and the original active job are required"
+        from core.command_pipeline import dispatch_commands
+        ctx.update(now=now, source="approval", approved=True, vetoes=[], corrections=[])
+        results = dispatch_commands([item["command"]], ctx)
+        ok = bool(results and results[0]["ok"])
+        outcome = "approved" if ok else "send_failed"
+        if not results:
+            outcome = "blocked"
         with self._lock:
-            self.history.appendleft({**item, "outcome": "approved" if ok else "send_failed", "at": now})
-        hooks.emit("commands.sent", [{"command": item["command"], "ok": ok, "ts": now}],
-                   {"source": "approval", "now": now, "corrections": [], "vetoes": []})
+            self.history.appendleft({**item, "outcome": outcome, "at": now})
+        if not results:
+            return None, "approval blocked by current safety checks"
         return {**item, "ok": ok}, None
 
     def status(self):
@@ -117,6 +143,7 @@ approval = Approval()
 
 
 def register_hooks(h) -> None:
+    h.on("tick", approval.tick, priority=30)
     h.on("commands.filter", approval.filter, priority=30)
 
 

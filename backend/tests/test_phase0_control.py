@@ -210,6 +210,7 @@ def test_macro_in_simulator_injects_instead_of_calling_moonraker(client, monkeyp
     import workers
 
     class Sim:
+        is_simulator = True
         def __init__(self):
             self.injected = []
 

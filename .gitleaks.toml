@@ -1,0 +1,26 @@
+title = "Indus3D secret scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Non-secret browser preference storage name"
+condition = "AND"
+paths = ['''^frontend/src/files/prefs\.js$''']
+regexTarget = "line"
+regexes = ['''^\s*const KEY = "indus3d_fm_prefs_v1";\s*$''']
+
+[[rules.allowlists]]
+description = "Public RFC 6455 example handshake nonce"
+condition = "AND"
+paths = ['''^scripts/check_system_stability\.py$''']
+regexTarget = "line"
+regexes = ['''^\s*f"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\\r\\n"\s*$''']
+
+[[rules]]
+id = "indus3d-telegram-bot-token"
+description = "Telegram bot token"
+regex = '''\b[0-9]{6,12}:[A-Za-z0-9_-]{35}\b'''

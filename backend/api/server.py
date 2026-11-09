@@ -157,7 +157,8 @@ def _run_managed_gcode(script: str):
     only reach it through fixed, validated jog and calibration actions below.
     """
     w = _worker()
-    if w and hasattr(w, "inject_gcode"):
+    import workers
+    if workers.is_simulator(w):
         w.inject_gcode(script)
         return {"status": "queued", "simulated": True}
 
@@ -884,12 +885,24 @@ def print_start():
     filename = data.get("filename", "")
     if not filename:
         return jsonify({"error": "filename required"}), 400
+    if _printer_is_busy(_worker()):
+        return jsonify({"error": "A print is already running or paused"}), 409
+    import workers
+    if workers.is_simulator(_worker()):
+        return jsonify({"error": "Use the simulation controls to start a simulated print"}), 409
+    from api.routes.files import clean_rel, PathError
+    try:
+        filename = clean_rel(filename, allow_empty=False)
+    except PathError as e:
+        return jsonify({"error": str(e)}), 400
     try:
         res = req.post(
             f"{settings.moonraker_url}/printer/print/start",
             params={"filename": filename}, timeout=10,
         )
-        return jsonify({"status": "ok" if res.ok else "error"})
+        if not res.ok:
+            return jsonify({"status": "error", "error": "Klipper rejected the print start"}), 422
+        return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 

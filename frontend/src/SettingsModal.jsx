@@ -1587,6 +1587,7 @@ function EcosystemTab({ borderClass, brutalist, t }) {
         body: JSON.stringify({ settings: uiPrefs }),
       });
       const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || "Settings sync failed");
       setSyncStatus(`Synced to ${data.source} at ${new Date().toLocaleTimeString()}`);
     } catch (err) {
       setSyncStatus(`Sync failed: ${err.message}`);
@@ -1600,6 +1601,7 @@ function EcosystemTab({ borderClass, brutalist, t }) {
     try {
       const res = await fetch(`${API}/api/v1/settings/sync`);
       const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(data.error || "Settings sync failed");
       if (data.settings && typeof data.settings === "object") {
         Object.entries(data.settings).forEach(([k, v]) => setUiPref(k, v));
         setSyncStatus(`Pulled ${Object.keys(data.settings).length} preferences from ${data.source}`);

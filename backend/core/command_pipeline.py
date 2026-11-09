@@ -48,6 +48,7 @@ def run_quality_cycle(controller, snap: dict, kin: dict, thm: dict, ext: dict,
         "now": now,
         "snap": snap,
         "autopilot": bool(controller.auto_pilot),
+        "controller": controller,
         "corrections": list(getattr(controller, "last_corrections", []) or []),
         "vetoes": [],
     }
@@ -57,7 +58,14 @@ def run_quality_cycle(controller, snap: dict, kin: dict, thm: dict, ext: dict,
         sctx = dict(ctx, corrections=list(shadow.get("corrections") or []))
         hooks.emit("shadow.commands", list(shadow.get("commands") or []), sctx)
 
-    kept = hooks.apply("commands.filter", list(commands), ctx) if commands else []
+    return dispatch_commands(commands, ctx)
+
+
+def dispatch_commands(commands: List[str], ctx: dict) -> List[dict]:
+    """Dispatch automatic and approved commands through the same current safeguards."""
+    send = ctx["send"]
+    controller = ctx.get("controller")
+    kept = hooks.apply("commands.filter", list(commands), ctx)
 
     results: List[dict] = []
     for cmd in kept:

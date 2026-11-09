@@ -16,6 +16,8 @@ URL = "/api/v1/printer/adjust"
 
 
 class Sim:
+    is_simulator = True
+
     def __init__(self):
         self.injected = []
 
@@ -50,6 +52,20 @@ def client(monkeypatch):
 
 def post(c, path, body=None):
     return c.post(f"{URL}/{path}", json=body if body is not None else {})
+
+
+def test_live_worker_injection_does_not_bypass_real_checks(client):
+    from workers.telemetry_worker import TelemetryWorker
+    live = TelemetryWorker.__new__(TelemetryWorker)
+    client.mp.setattr(client.workers, "_active_worker", live)
+    client.mp.setattr(mu, "query_objects", lambda names: {"extruder": {"can_extrude": False}})
+    assert post(client, "extrude", {"amount": 1}).status_code == 409
+    assert post(client, "heater", {"heater": "extruder", "target": 290}).status_code == 400
+    client.R.ok = False
+    client.R.text = "rejected"
+    response = post(client, "flow", {"factor": 95})
+    assert response.status_code == 422
+    assert len(client.sent) == 1 and client.sent[0].startswith("M221 S95")
 
 
 def go_busy(c):

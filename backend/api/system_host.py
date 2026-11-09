@@ -78,7 +78,7 @@ class Refused(RuntimeError):
 def is_sim() -> bool:
     try:
         import workers
-        return hasattr(workers._active_worker, "inject_gcode")
+        return workers.is_simulator(workers._active_worker)
     except Exception:  # noqa: BLE001
         return False
 

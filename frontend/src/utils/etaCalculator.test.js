@@ -7,6 +7,13 @@ import {
 } from "./etaCalculator.js";
 
 describe("calculateProgressAndEta", () => {
+  test("never compares consumed millimetres with a spool weight in grams", () => {
+    const result = calculateProgressAndEta(ETA_METHODS.FILAMENT,
+      { filament_used: 10, progress: 0.25, print_duration: 100 },
+      { filament_weight_total: 20 });
+    assert.equal(result.methodUsed, "filament (fallback to file)");
+    assert.equal(result.remainingSeconds, 300);
+  });
   test("calculates file position ETA accurately", () => {
     // 50% done in 1000s -> 1000s remaining
     const res = calculateProgressAndEta(ETA_METHODS.FILE, {

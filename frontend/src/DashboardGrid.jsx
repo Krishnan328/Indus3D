@@ -18,6 +18,7 @@ import {
 } from "./console/consoleLogic.js";
 import { filterMacrosByState, groupMacros, DEFAULT_MACRO_CONFIG } from "./slices/macroSlice";
 import { useStore } from "./store";
+import { MultiMaterialCard } from "./MultiMaterialCard";
 import { Viewport } from "./Viewport";
 import { PrintStatusCard } from "./PrintStatusCard";
 import { QualityPanel } from "./QualityPanel";
@@ -1205,6 +1206,7 @@ export function DashboardGrid({ isDarkMode }) {
           </div>
         </div>
 
+        <MultiMaterialCard />
         <div className="flex-1 min-h-0 pb-10">
           <ResponsiveGridLayout
             className="layout"

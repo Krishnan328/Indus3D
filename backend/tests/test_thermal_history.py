@@ -189,6 +189,7 @@ def test_simulator_skips_moonraker(client, monkeypatch):
     import workers
 
     class Sim:
+        is_simulator = True
         def inject_gcode(self, s):
             pass
     monkeypatch.setattr(workers, "_active_worker", Sim())
@@ -198,10 +199,20 @@ def test_simulator_skips_moonraker(client, monkeypatch):
     assert d["ok"] and d["sources"]["moonraker"]["ok"] is False and len(d["series"]["extruder"]["t"]) >= 55
 
 
+def test_live_worker_keeps_moonraker_temperature_history(client, monkeypatch):
+    import workers
+    from workers.telemetry_worker import TelemetryWorker
+    monkeypatch.setattr(workers, "_active_worker", TelemetryWorker.__new__(TelemetryWorker))
+    d = hist(client).get_json()
+    assert d["ok"] and d["sources"]["moonraker"]["ok"]
+    assert "extruder" in d["series"]
+
+
 def test_simulator_with_nothing_stored_is_an_empty_200_not_a_502(client, monkeypatch):
     import workers
 
     class Sim:
+        is_simulator = True
         def inject_gcode(self, s):
             pass
     monkeypatch.setattr(workers, "_active_worker", Sim())

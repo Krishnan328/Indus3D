@@ -78,12 +78,14 @@ def test_approval_holds_supersedes_and_passes_safety():
 
 def test_approval_approve_sends_and_emits_sent(monkeypatch):
     reg = HookRegistry()
-    monkeypatch.setattr(approval_mod, "hooks", reg)
+    monkeypatch.setattr(command_pipeline, "hooks", reg)
     emitted = []
     reg.on("commands.sent", lambda res, ctx: emitted.append((res, ctx["source"])))
     sent = []
     a = approval_mod.Approval(enabled=True, ttl_s=30)
-    a.filter(["M221 S95"], {"now": 1.0, "send": lambda c: sent.append(c) or True})
+    a.filter(["M221 S95"], {"now": 1.0, "send": lambda c: sent.append(c) or True,
+                           "snap": {"print_state": "printing", "filename": "a.gcode"},
+                           "autopilot": True})
     item, err = a.decide(1, True, now=2.0)
     assert err is None and sent == ["M221 S95"] and item["ok"]
     assert emitted[0][1] == "approval" and emitted[0][0][0]["command"] == "M221 S95"

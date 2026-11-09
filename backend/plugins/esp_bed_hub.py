@@ -268,7 +268,8 @@ class EspHub:
 
     # -- hooks -------------------------------------------------------------------------------
     def hold_active(self) -> bool:
-        return bool(self.hold and self.enabled and self.hub_ok and self.crash_latched)
+        # Losing telemetry cannot acknowledge a crash that was already latched.
+        return bool(self.hold and self.enabled and self.crash_latched)
 
     def filter_commands(self, commands, ctx):
         if not commands or not self.hold_active():

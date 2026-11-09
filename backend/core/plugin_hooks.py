@@ -21,9 +21,8 @@ Hooks (name -> callback signature)
   shadow.commands    fn(commands: list[str], ctx: dict) -> None
         Commands the controller *would* have sent while the auto-pilot is off.
 
-Failure policy: a hook that raises is logged and skipped. A broken plugin can
-never stop the control loop, and a failing filter leaves the commands
-unchanged (the behaviour before plugins existed).
+Observer failures are logged and skipped. A failed command filter blocks corrections
+while retaining emergency commands; it must not turn a missing safeguard into permission.
 """
 
 import logging
@@ -72,14 +71,25 @@ class HookRegistry:
                 logging.error(f"🧩 hook '{name}' failed in {getattr(fn, '__module__', fn)}: {e}")
 
     def apply(self, name: str, value: list, *args) -> list:
-        """Run a filter chain. A callback that raises or returns a non-list is ignored."""
+        """Run filters; command-filter failures deny non-emergency commands."""
         for fn in self._callbacks(name):
             try:
                 out = fn(list(value), *args)
                 if isinstance(out, list):
                     value = out
+                else:
+                    raise TypeError("filter must return a list")
             except Exception as e:  # noqa: BLE001
                 logging.error(f"🧩 filter '{name}' failed in {getattr(fn, '__module__', fn)}: {e}")
+                if name == "commands.filter":
+                    kept = []
+                    for command in value:
+                        token = command.strip().split(None, 1)[0].upper() if command.strip() else ""
+                        if token in {"PAUSE", "M112", "CANCEL_PRINT"}:
+                            kept.append(command)
+                        elif args and isinstance(args[0], dict):
+                            ctx_veto(args[0], command, "filter_failure", "a command safety filter failed")
+                    value = kept
         return value
 
 

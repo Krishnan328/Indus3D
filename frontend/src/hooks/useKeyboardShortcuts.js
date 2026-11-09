@@ -15,6 +15,7 @@ export function useKeyboardShortcuts({
   setPage,
 }) {
   const isPrinting = useStore((s) => s.telemetry?.state === "printing");
+  const isPaused = useStore((s) => s.telemetry?.state === "paused");
   const jog = useStore((s) => s.jog);
 
   useEffect(() => {
@@ -66,7 +67,7 @@ export function useKeyboardShortcuts({
       }
 
       // Jogs (only if not printing)
-      if (!isPrinting) {
+      if (!isPrinting && !isPaused) {
         if (e.altKey && e.key === "ArrowLeft") {
           e.preventDefault();
           if (jog) jog("X", -10);
@@ -102,5 +103,5 @@ export function useKeyboardShortcuts({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onToggleShortcuts, onEmergencyStop, onCloseModals, onFocusConsole, setPage, isPrinting, jog]);
+  }, [onToggleShortcuts, onEmergencyStop, onCloseModals, onFocusConsole, setPage, isPrinting, isPaused, jog]);
 }

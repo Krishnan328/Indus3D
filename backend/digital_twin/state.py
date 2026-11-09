@@ -23,6 +23,13 @@ class PrinterState:
         self.klippy_connected = True
         self.state_message = ""
         self.device_temperatures = {}
+        self.filament_used = 0.0
+        self.m73_progress = None
+        self.m73_remaining_s = None
+        self.mmu = None
+        self.afc = None
+        self.beacon = None
+        self.cartographer = None
 
     def update(self, data: dict):
         with self._lock:
@@ -58,6 +65,13 @@ class PrinterState:
                 "klippy_connected": self.klippy_connected,
                 "state_message": self.state_message,
                 "device_temperatures": dict(self.device_temperatures),
+                "filament_used": self.filament_used,
+                "m73_progress": self.m73_progress,
+                "m73_remaining_s": self.m73_remaining_s,
+                "mmu": self.mmu,
+                "afc": self.afc,
+                "beacon": self.beacon,
+                "cartographer": self.cartographer,
             }
 
 printer_state = PrinterState()

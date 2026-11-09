@@ -156,7 +156,7 @@ def test_respond_to_prompt_success(client):
         r = client.post("/api/v1/printer/prompt/respond", json={"command": "CONFIRM_CMD"})
         assert r.status_code == 200
         assert r.get_json()["status"] == "ok"
-        mock_run.assert_called_once_with("CONFIRM_CMD")
+        mock_run.assert_called_once_with("CONFIRM_CMD", timeout=10)
 
     # Prompt should be closed after responding
     assert macro_prompt_manager.get_state() is None

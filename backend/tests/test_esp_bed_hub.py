@@ -187,7 +187,7 @@ def test_corrections_are_held_while_latched(db):
     assert h.filter_commands(["M104 S215"], {}) == ["M104 S215"]
 
 
-def test_hold_ends_when_the_latch_clears_or_the_hub_goes_away(db):
+def test_hold_ends_only_when_a_connected_hub_clears_the_latch(db):
     p = {"d": crash_payload()}
     h = make(db, lambda: dict(p["d"]))
     h.poll_once(now=1.0)
@@ -199,7 +199,11 @@ def test_hold_ends_when_the_latch_clears_or_the_hub_goes_away(db):
     h.poll_once(now=3.0)
     p["d"] = sample(connected=False)
     h.poll_once(now=4.0)
-    assert not h.hold_active()                                        # unknown state must not freeze the controller
+    assert h.crash_latched and h.hold_active()
+    assert h.filter_commands(["M104 S210"], {}) == []
+    h._fetch = lambda _: (_ for _ in ()).throw(OSError("disconnected"))
+    h.poll_once(now=5.0)
+    assert h.hold_active()
 
 
 # ── EXCLUDE_OBJECT (opt-in) ───────────────────────────────────────────────────────
