@@ -1,0 +1,57 @@
+{
+  "nav": {
+    "dashboard": "Panel de control",
+    "fleet": "Flota",
+    "twin": "Gemelo Digital",
+    "lab": "Laboratorio",
+    "files": "Archivos",
+    "history": "Historial",
+    "system": "Sistema",
+    "config": "Editor de configuración",
+    "heightmap": "Malla de nivelación",
+    "calibration": "Calibración guiada",
+    "spools": "Gestor de bobinas",
+    "settings": "Ajustes"
+  },
+  "status": {
+    "ready": "Listo",
+    "printing": "Imprimiendo",
+    "paused": "En pausa",
+    "standby": "En espera",
+    "error": "Error",
+    "shutdown": "Apagado",
+    "offline": "Desconectado"
+  },
+  "printStatus": {
+    "title": "Estado de impresión",
+    "elapsed": "Transcurrido",
+    "eta": "Tiempo restante",
+    "speed": "Velocidad",
+    "flow": "Flujo",
+    "fan": "Ventilador",
+    "layer": "Capa",
+    "pause": "Pausa",
+    "resume": "Reanudar",
+    "cancel": "Cancelar",
+    "uploadAndPrint": "Subir e imprimir"
+  },
+  "console": {
+    "title": "Consola",
+    "placeholder": "Enviar comando o G-code...",
+    "filterPlaceholder": "Filtrar salida de consola...",
+    "filterMode": "Modo de filtro",
+    "allLines": "Todas las líneas",
+    "clear": "Limpiar consola"
+  },
+  "common": {
+    "emergencyStop": "PARADA DE EMERGENCIA",
+    "confirm": "Confirmar",
+    "cancel": "Cancelar",
+    "save": "Guardar",
+    "close": "Cerrar",
+    "delete": "Eliminar",
+    "refresh": "Actualizar",
+    "search": "Buscar...",
+    "shortcuts": "Atajos de teclado"
+  }
+}

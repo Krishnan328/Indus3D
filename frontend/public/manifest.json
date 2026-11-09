@@ -1,0 +1,18 @@
+{
+  "name": "Indus3D - Digital Twin & Printer Controller",
+  "short_name": "Indus3D",
+  "description": "High-performance Digital Twin, Closed-Loop Defect Detector, and Control Dashboard for Klipper 3D Printers",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0f19",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

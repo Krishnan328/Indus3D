@@ -37,6 +37,7 @@ from api.routes.lab import lab_bp
 from api.routes.calibration_workflow import calibration_workflow_bp
 from api.routes.macro_prompts import prompt_bp
 from api.routes.history import history_bp
+from api.routes.settings_sync import settings_sync_bp
 from api.auth import auth_bp, install_auth_gate, get_or_create_secret_key, auth_required
 
 app  = Flask(__name__)
@@ -91,6 +92,7 @@ app.register_blueprint(lab_bp,      url_prefix="/api/v1/lab")
 app.register_blueprint(calibration_workflow_bp, url_prefix="/api/v1/calibration/workflow")
 app.register_blueprint(prompt_bp,               url_prefix="/api/v1/printer/prompt")
 app.register_blueprint(history_bp,              url_prefix="/api/v1/history")
+app.register_blueprint(settings_sync_bp,        url_prefix="/api/v1/settings/sync")
 app.register_blueprint(auth_bp)
 
 # Session secret + auth gate

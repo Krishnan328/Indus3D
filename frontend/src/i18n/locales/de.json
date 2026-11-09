@@ -1,0 +1,57 @@
+{
+  "nav": {
+    "dashboard": "Übersicht",
+    "fleet": "Flottenkommando",
+    "twin": "Digitaler Zwilling",
+    "lab": "Drucker-Labor",
+    "files": "Dateien",
+    "history": "Druckverlauf",
+    "system": "System",
+    "config": "Konfigurations-Editor",
+    "heightmap": "Höhenkarte",
+    "calibration": "Geführte Kalibrierung",
+    "spools": "Virtuelle Spulenverwaltung",
+    "settings": "Einstellungen"
+  },
+  "status": {
+    "ready": "Bereit",
+    "printing": "Druckt",
+    "paused": "Pausiert",
+    "standby": "Standby",
+    "error": "Fehler",
+    "shutdown": "Heruntergefahren",
+    "offline": "Offline"
+  },
+  "printStatus": {
+    "title": "Druckstatus",
+    "elapsed": "Verstrichen",
+    "eta": "Restzeit",
+    "speed": "Geschwindigkeit",
+    "flow": "Fluss",
+    "fan": "Lüfter",
+    "layer": "Schicht",
+    "pause": "Pause",
+    "resume": "Fortsetzen",
+    "cancel": "Abbrechen",
+    "uploadAndPrint": "Hochladen & Drucken"
+  },
+  "console": {
+    "title": "Konsole",
+    "placeholder": "G-Code oder Befehl senden...",
+    "filterPlaceholder": "Ausgabe filtern...",
+    "filterMode": "Filtermodus",
+    "allLines": "Alle Zeilen",
+    "clear": "Konsole leeren"
+  },
+  "common": {
+    "emergencyStop": "NOT-AUS",
+    "confirm": "Bestätigen",
+    "cancel": "Abbrechen",
+    "save": "Speichern",
+    "close": "Schließen",
+    "delete": "Löschen",
+    "refresh": "Aktualisieren",
+    "search": "Suchen...",
+    "shortcuts": "Tastaturkürzel"
+  }
+}

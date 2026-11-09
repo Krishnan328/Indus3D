@@ -1,0 +1,57 @@
+{
+  "nav": {
+    "dashboard": "Dashboard",
+    "fleet": "Fleet Command",
+    "twin": "Digital Twin",
+    "lab": "Printer Lab",
+    "files": "Files",
+    "history": "Print History",
+    "system": "System",
+    "config": "Config Editor",
+    "heightmap": "Heightmap",
+    "calibration": "Guided Calibration",
+    "spools": "Virtual Spool Manager",
+    "settings": "Settings"
+  },
+  "status": {
+    "ready": "Ready",
+    "printing": "Printing",
+    "paused": "Paused",
+    "standby": "Standby",
+    "error": "Error",
+    "shutdown": "Shutdown",
+    "offline": "Offline"
+  },
+  "printStatus": {
+    "title": "Print Status",
+    "elapsed": "Elapsed",
+    "eta": "ETA",
+    "speed": "Speed",
+    "flow": "Flow",
+    "fan": "Fan",
+    "layer": "Layer",
+    "pause": "Pause",
+    "resume": "Resume",
+    "cancel": "Cancel",
+    "uploadAndPrint": "Upload & Print"
+  },
+  "console": {
+    "title": "Console",
+    "placeholder": "Send G-code or command...",
+    "filterPlaceholder": "Filter console output...",
+    "filterMode": "Filter mode",
+    "allLines": "All lines",
+    "clear": "Clear console"
+  },
+  "common": {
+    "emergencyStop": "EMERGENCY STOP",
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "save": "Save",
+    "close": "Close",
+    "delete": "Delete",
+    "refresh": "Refresh",
+    "search": "Search...",
+    "shortcuts": "Keyboard Shortcuts"
+  }
+}

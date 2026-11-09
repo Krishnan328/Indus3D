@@ -20,6 +20,10 @@ import { TouchUI } from "./TouchUI";
 import { LoginScreen } from "./LoginScreen";
 import { MacroPromptModal } from "./MacroPromptModal";
 import { HistoryPage } from "./HistoryPage";
+import { LanguageSwitcher } from "./LanguageSwitcher";
+import { ShortcutsModal } from "./ShortcutsModal";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { Keyboard } from "lucide-react";
 import { useThemeTokens, useIsBrutalist, useIsSoft } from "./theme";
 
 const originalConsoleWarn = console.warn;
@@ -242,7 +246,7 @@ function ProgressFavicon() {
   return null;
 }
 
-function TopHeader() {
+function TopHeader({ onOpenShortcuts }) {
   const fault   = useStore((s) => s.telemetry?.fault);
   const alerts  = useStore((s) => s.alerts);
   const simMode = useStore((s) => s.simMode);
@@ -311,6 +315,16 @@ function TopHeader() {
           </div>
         )}
         <ThemeSwitcher />
+        <LanguageSwitcher />
+        {onOpenShortcuts && (
+          <button
+            onClick={onOpenShortcuts}
+            title="Keyboard Shortcuts (?)"
+            className={`p-1.5 ${t.chip} ${t.railBtn} opacity-70 hover:opacity-100 transition-opacity`}
+          >
+            <Keyboard size={14} />
+          </button>
+        )}
         <div className={`flex items-center gap-2 px-3 py-1.5 ${t.chip} ${
           isShutdown || isError || isOffline 
             ? (brutalist ? "bg-[#FF3333] text-white border-2 border-[#111]" : "border border-red-500/50 bg-red-950/50 text-red-300 shadow-md shadow-red-950/50") 
@@ -337,7 +351,31 @@ export default function App() {
   const [showCalibration,setShowCalibration] = useState(false);
   const [showPower, setShowPower] = useState(false);
   const [showSpools, setShowSpools] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [dismissedIncident, setDismissedIncident] = useState(false);
+
+  useKeyboardShortcuts({
+    onToggleShortcuts: () => setShowShortcuts((s) => !s),
+    onEmergencyStop: () => {
+      if (window.confirm("TRIGGER EMERGENCY STOP (M112)?")) {
+        useStore.getState().emergencyStop();
+      }
+    },
+    onCloseModals: () => {
+      setShowEditor(false);
+      setShowHeightmap(false);
+      setShowSettings(false);
+      setShowCalibration(false);
+      setShowPower(false);
+      setShowSpools(false);
+      setShowShortcuts(false);
+    },
+    onFocusConsole: () => {
+      const el = document.querySelector('input[placeholder*="command" i], input[placeholder*="G-code" i]');
+      if (el) el.focus();
+    },
+    setPage,
+  });
 
 
   const isDarkMode = useStore((s) => s.isDarkMode);
@@ -402,7 +440,7 @@ export default function App() {
         onOpenSpools={() => setShowSpools(true)}
       />
       <div className="flex-1 relative flex flex-col p-4 min-w-0">
-        <TopHeader />
+        <TopHeader onOpenShortcuts={() => setShowShortcuts(true)} />
         <KlippyStateBanner />
         <ProfileBar isDarkMode={isDarkMode} />
         <AlertBar />
@@ -412,6 +450,7 @@ export default function App() {
         {showCalibration && <ControlledCalibrationWizard onClose={() => setShowCalibration(false)} />}
         {showPower && <PowerModal onClose={() => setShowPower(false)} />}
         {showSpools && <SpoolManager onClose={() => setShowSpools(false)} />}
+        <ShortcutsModal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
         <MacroPromptModal />
         {telemetryState === "error" && !dismissedIncident && <IncidentModal onClose={() => setDismissedIncident(true)} />}
 
