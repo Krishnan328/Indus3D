@@ -35,6 +35,7 @@ from api.routes.adjust import adjust_bp
 from api.routes.thermal import thermal_bp
 from api.routes.lab import lab_bp
 from api.routes.calibration_workflow import calibration_workflow_bp
+from api.routes.macro_prompts import prompt_bp
 from api.auth import auth_bp, install_auth_gate, get_or_create_secret_key, auth_required
 
 app  = Flask(__name__)
@@ -87,6 +88,7 @@ app.register_blueprint(adjust_bp,   url_prefix="/api/v1/printer/adjust")
 app.register_blueprint(thermal_bp,  url_prefix="/api/v1/printer")
 app.register_blueprint(lab_bp,      url_prefix="/api/v1/lab")
 app.register_blueprint(calibration_workflow_bp, url_prefix="/api/v1/calibration/workflow")
+app.register_blueprint(prompt_bp,               url_prefix="/api/v1/printer/prompt")
 app.register_blueprint(auth_bp)
 
 # Session secret + auth gate

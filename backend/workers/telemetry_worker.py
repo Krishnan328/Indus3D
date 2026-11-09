@@ -358,7 +358,13 @@ class TelemetryWorker:
                     elif msg.get("method") == "notify_gcode_response":
                         params = msg.get("params", [])
                         if params:
-                            self.live_commands.append({"text": str(params[0]), "ts": time.time()})
+                            msg_text = str(params[0])
+                            self.live_commands.append({"text": msg_text, "ts": time.time()})
+                            try:
+                                from api.routes.macro_prompts import macro_prompt_manager
+                                macro_prompt_manager.feed(msg_text)
+                            except Exception:
+                                pass
                     elif msg.get("method") == "notify_klippy_shutdown":
                         params = msg.get("params", [])
                         err = str(params[0]) if params else "MCU shutdown"

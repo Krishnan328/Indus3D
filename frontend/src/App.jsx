@@ -18,6 +18,7 @@ import { ControlledCalibrationWizard } from "./ControlledCalibrationWizard";
 import { SpoolManager } from "./SpoolManager";
 import { TouchUI } from "./TouchUI";
 import { LoginScreen } from "./LoginScreen";
+import { MacroPromptModal } from "./MacroPromptModal";
 import { useThemeTokens, useIsBrutalist, useIsSoft } from "./theme";
 
 const originalConsoleWarn = console.warn;
@@ -410,6 +411,7 @@ export default function App() {
         {showCalibration && <ControlledCalibrationWizard onClose={() => setShowCalibration(false)} />}
         {showPower && <PowerModal onClose={() => setShowPower(false)} />}
         {showSpools && <SpoolManager onClose={() => setShowSpools(false)} />}
+        <MacroPromptModal />
         {telemetryState === "error" && !dismissedIncident && <IncidentModal onClose={() => setDismissedIncident(true)} />}
 
         {page === "dashboard" ? <DashboardGrid key={dashboardMode} isDarkMode={isDarkMode} />
