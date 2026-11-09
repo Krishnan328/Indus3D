@@ -36,6 +36,7 @@ from api.routes.thermal import thermal_bp
 from api.routes.lab import lab_bp
 from api.routes.calibration_workflow import calibration_workflow_bp
 from api.routes.macro_prompts import prompt_bp
+from api.routes.history import history_bp
 from api.auth import auth_bp, install_auth_gate, get_or_create_secret_key, auth_required
 
 app  = Flask(__name__)
@@ -89,6 +90,7 @@ app.register_blueprint(thermal_bp,  url_prefix="/api/v1/printer")
 app.register_blueprint(lab_bp,      url_prefix="/api/v1/lab")
 app.register_blueprint(calibration_workflow_bp, url_prefix="/api/v1/calibration/workflow")
 app.register_blueprint(prompt_bp,               url_prefix="/api/v1/printer/prompt")
+app.register_blueprint(history_bp,              url_prefix="/api/v1/history")
 app.register_blueprint(auth_bp)
 
 # Session secret + auth gate
@@ -929,23 +931,6 @@ def get_telemetry():
         "extrusion":       d.get("extrusion", {}),
         "power":          d.get("power", {}),
     })
-
-
-@app.route("/api/v1/history", methods=["GET"])
-def history():
-    w = _worker()
-    if w and hasattr(w, "print_history") and w.print_history:
-        return jsonify(w.print_history[-20:])
-    try:
-        from db.models import get_connection
-        conn = get_connection(); c = conn.cursor()
-        c.execute("SELECT filename,status,timestamp,report_path,annotated_gcode_path FROM print_history "
-                  "ORDER BY id DESC LIMIT 20")
-        rows = [{"filename": r[0], "status": r[1], "timestamp": r[2], "report_path": r[3], "annotated_gcode_path": r[4]}
-                for r in c.fetchall()]
-        conn.close(); return jsonify(rows)
-    except Exception:
-        return jsonify([])
 
 
 @app.route("/api/v1/environment", methods=["GET"])

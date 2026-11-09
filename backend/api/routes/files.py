@@ -73,6 +73,7 @@ META_KEYS = (
     "slicer", "slicer_version", "filament_type", "filament_name", "filament_total", "filament_weight_total",
     "first_layer_extr_temp", "first_layer_bed_temp", "chamber_temp", "layer_height", "first_layer_height",
     "nozzle_diameter", "estimated_time", "object_height", "print_start_time", "job_id",
+    "layer_count", "analysis",
 )
 
 

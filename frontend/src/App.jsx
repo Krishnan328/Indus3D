@@ -19,6 +19,7 @@ import { SpoolManager } from "./SpoolManager";
 import { TouchUI } from "./TouchUI";
 import { LoginScreen } from "./LoginScreen";
 import { MacroPromptModal } from "./MacroPromptModal";
+import { HistoryPage } from "./HistoryPage";
 import { useThemeTokens, useIsBrutalist, useIsSoft } from "./theme";
 
 const originalConsoleWarn = console.warn;
@@ -417,6 +418,7 @@ export default function App() {
         {page === "dashboard" ? <DashboardGrid key={dashboardMode} isDarkMode={isDarkMode} />
           : page === "fleet" ? <FleetPage isDarkMode={isDarkMode} />
           : page === "files" ? <FileManager />
+          : page === "history" ? <HistoryPage isDarkMode={isDarkMode} />
           : page === "system" ? <SystemPage />
           : page === "lab" ? <PrinterLabPage />
           : <DigitalTwinPage isDarkMode={isDarkMode} />}

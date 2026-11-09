@@ -330,6 +330,7 @@ export const useStore = create((set, get) => ({
     extTarget: 0, bedTarget: 0,
     state: "standby", filename: "", file_position: 0, fault: false,
     progress: 0, print_duration: 0, time_remaining: 0,
+    filament_used: 0, m73_progress: null,
     speed_factor: 100, flow_factor: 100, fan_speed: 0,
     online: true,
     klippy_state: "ready",
@@ -570,7 +571,13 @@ export const useStore = create((set, get) => ({
       ]);
       if (pr.ok) set({ power:            await pr.json() });
       if (er.ok) set({ environment:      await er.json() });
-      if (hr && hr.ok) set({ printHistory:     await hr.json() });
+      if (hr && hr.ok) {
+        const histData = await hr.json();
+        set({
+          printHistory: Array.isArray(histData) ? histData : (histData.jobs || []),
+          historyStats: histData.stats || null,
+        });
+      }
       if (mr && mr.ok) { 
         const d = await mr.json(); 
         set({ 
@@ -1683,6 +1690,8 @@ export const useStore = create((set, get) => ({
               progress:        d.progress      ?? 0,
               print_duration:  d.print_duration ?? 0,
               time_remaining:  d.time_remaining ?? 0,
+              filament_used:   d.filament_used ?? get().telemetry?.filament_used ?? 0,
+              m73_progress:    d.m73_progress  ?? get().telemetry?.m73_progress  ?? null,
               speed_factor:    d.speed_factor  ?? 100,
               flow_factor:     d.flow_factor   ?? 100,
               fan_speed:       d.fan_speed     ?? get().telemetry?.fan_speed ?? 0,

@@ -1,9 +1,9 @@
 import React from "react";
-import { LayoutDashboard, GitBranch, Files, FileText, Map, Settings, Sparkles, Layers, Power, FileDown, Database, Server, Beaker } from "lucide-react";
+import { LayoutDashboard, GitBranch, Files, FileText, Map, Settings, Sparkles, Layers, Power, FileDown, Database, Server, Beaker, Clock } from "lucide-react";
 import { useStore } from "./store";
 import { useThemeTokens, useIsBrutalist, useIsSoft } from "./theme";
 
-const PAGE_IDS = ["dashboard", "twin", "files", "fleet", "system", "lab"];
+const PAGE_IDS = ["dashboard", "twin", "files", "history", "fleet", "system", "lab"];
 
 export function NavRail({ page, setPage, onOpenEditor, onOpenHeightmap, onOpenSettings, onOpenCalibration, onOpenPower, onOpenSpools }) {
   const t = useThemeTokens();
@@ -16,6 +16,7 @@ export function NavRail({ page, setPage, onOpenEditor, onOpenHeightmap, onOpenSe
     { id: "twin",       icon: GitBranch,       label: "Digital Twin", onClick: () => setPage("twin") },
     { id: "lab",        icon: Beaker,          label: "Printer Lab", onClick: () => setPage("lab") },
     { id: "files",      icon: Files,           label: "Files", onClick: () => setPage("files") },
+    { id: "history",    icon: Clock,           label: "Print History", onClick: () => setPage("history") },
     { id: "system",     icon: Server,          label: "System", onClick: () => setPage("system") },
     { id: "config",     icon: FileText,        label: "Config editor", onClick: onOpenEditor },
     { id: "heightmap",  icon: Map,             label: "Heightmap", onClick: onOpenHeightmap },

@@ -880,6 +880,8 @@ class TelemetryWorker:
                 "progress":        round(progress, 4),
                 "print_duration":  int(print_duration),
                 "time_remaining":  time_remaining,
+                "filament_used":   round(float(ps.get("filament_used", 0.0) or 0.0), 2),
+                "m73_progress":    round(float(ds.get("progress", 0.0) or 0.0) * 100, 1),
                 "speed_factor":    speed_factor,
                 "flow_factor":     flow_factor,
                 "fan_speed":       round(fan.get("speed", 0.0) * 100, 1),

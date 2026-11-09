@@ -12,7 +12,7 @@ export const UI_PREF_DEFAULTS = {
   // console
   consoleCompact: false, consoleDirection: "bottom", hideTempsInConsole: false,
   // formats / display
-  dateFormat: "browser", timeFormat: "browser", printerDisplayName: "", showProgressFavicon: true,
+  dateFormat: "browser", timeFormat: "browser", printerDisplayName: "", showProgressFavicon: true, etaMethod: "weighted",
   // editor and files
   editorCloseOnEsc: true, editorConfirmUnsaved: true, editorTabSize: 2, hideUploadButton: false,
   // g-code viewer

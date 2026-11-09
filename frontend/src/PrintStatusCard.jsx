@@ -6,7 +6,7 @@
  * pause/resume/cancel controls, and file upload button.
  */
 
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useMemo, useEffect } from "react";
 import {
   Upload, Play, Pause, Square, Clock, Percent,
   Gauge, Layers, Fan, Sliders, Save, Plus, Minus
@@ -14,6 +14,7 @@ import {
 import { useStore } from "./store";
 import { useThemeTokens, useIsBrutalist } from "./theme";
 import { SpoolPicker } from "./SpoolPicker";
+import { calculateProgressAndEta, formatEtaDisplay, ETA_METHODS } from "./utils/etaCalculator";
 
 const formatTime = (seconds) => {
   if (!seconds || seconds <= 0) return "--:--:--";
@@ -31,6 +32,7 @@ const formatDuration = (seconds) => {
 };
 
 export function PrintStatusCard({ isDarkMode }) {
+  const telemetry = useStore((s) => s.telemetry);
   const state = useStore((s) => s.telemetry?.state);
   const klippy_state = useStore((s) => (s.telemetry?.klippy_state || "").toLowerCase());
   const filename = useStore((s) => s.telemetry?.filename);
@@ -47,6 +49,11 @@ export function PrintStatusCard({ isDarkMode }) {
   const uploadAndPrint = useStore((s) => s.uploadAndPrint);
   const confirmCancelPrint = useStore((s) => s.uiPrefs.confirmCancelPrint);
   const hideUploadButton   = useStore((s) => s.uiPrefs.hideUploadButton);
+  const etaMethod          = useStore((s) => s.uiPrefs?.etaMethod) || ETA_METHODS.WEIGHTED;
+  const setUiPref          = useStore((s) => s.setUiPref);
+
+  const gcodeMetadata      = useStore((s) => s.gcodeMetadata);
+  const fetchGcodeMetadata = useStore((s) => s.fetchGcodeMetadata);
 
   const setBabystep = useStore((s) => s.setBabystep);
   const saveBabystep = useStore((s) => s.saveBabystep);
@@ -70,7 +77,35 @@ export function PrintStatusCard({ isDarkMode }) {
   const isPaused   = state === "paused";
   const isIdle     = !isPrinting && !isPaused;
 
-  const progressPercent = (progress ?? 0) * 100;
+  // Metadata retrieval
+  const rawMeta = filename ? gcodeMetadata[filename] : null;
+  const metadata = (rawMeta && typeof rawMeta === "object") ? (rawMeta.meta || rawMeta) : null;
+
+  useEffect(() => {
+    if (filename && (!rawMeta || rawMeta === "error")) {
+      fetchGcodeMetadata(filename);
+    }
+  }, [filename, rawMeta, fetchGcodeMetadata]);
+
+  // ETA and Progress calculation
+  const etaResult = useMemo(() => {
+    return calculateProgressAndEta(etaMethod, {
+      print_duration,
+      progress,
+      filament_used: telemetry?.filament_used,
+      m73_progress: telemetry?.m73_progress,
+      time_remaining,
+    }, metadata);
+  }, [etaMethod, print_duration, progress, telemetry?.filament_used, telemetry?.m73_progress, time_remaining, metadata]);
+
+  const activeProgressPercent = etaResult.progressPercent;
+  const activeRemainingSeconds = etaResult.remainingSeconds;
+
+  // Layer estimation
+  const layerHeight = Number(metadata?.layer_height || 0.2);
+  const totalLayers = Number(metadata?.layer_count || (metadata?.object_height ? Math.ceil(metadata.object_height / layerHeight) : 0));
+  const currentLayer = totalLayers > 0 ? Math.min(totalLayers, Math.max(1, Math.round((z ?? 0) / layerHeight))) : null;
+
   const shortname  = filename?.length > 28 ? "…" + filename.slice(-26) : (filename || "No active file");
 
   const cell  = brutalist
@@ -144,14 +179,14 @@ export function PrintStatusCard({ isDarkMode }) {
       {/* Progress bar */}
       <div className="shrink-0">
         <div className="flex justify-between text-[10px] font-mono opacity-60 mb-1">
-          <span>{progressPercent.toFixed(1)}%</span>
+          <span>{activeProgressPercent.toFixed(1)}%</span>
           <span>Elapsed: {formatDuration(print_duration)}</span>
         </div>
         <div className={`w-full h-3 rounded-full overflow-hidden ${brutalist ? "border-2 border-[#111] bg-white" : (isDarkMode ? "bg-gray-800" : "bg-gray-200")}`}>
           <div
             className="h-full rounded-full transition-all duration-500"
             style={{
-              width: `${Math.min(progressPercent, 100)}%`,
+              width: `${Math.min(activeProgressPercent, 100)}%`,
               background: isPaused
                 ? "linear-gradient(90deg, #d97706, #f59e0b)"
                 : (brutalist ? "#32E0C4" : "linear-gradient(90deg, #2563eb, #06b6d4)"),
@@ -160,15 +195,49 @@ export function PrintStatusCard({ isDarkMode }) {
         </div>
       </div>
 
+      {/* Slicer / Metadata bar if available */}
+      {metadata && (metadata.slicer || metadata.estimated_time) && (
+        <div className="flex items-center justify-between px-2 py-1 rounded text-[9px] font-mono opacity-70 border border-white/5 bg-black/20 shrink-0">
+          <span className="truncate max-w-[120px]">{metadata.slicer ? `${metadata.slicer} ${metadata.slicer_version || ""}` : "Slicer"}</span>
+          {metadata.estimated_time && <span>Est: {formatDuration(metadata.estimated_time)}</span>}
+          {metadata.filament_total && <span>Fil: {(metadata.filament_total / 1000).toFixed(1)}m</span>}
+        </div>
+      )}
+
       {/* Stats & Overrides grid */}
       <div className="grid grid-cols-2 gap-2 text-center font-mono text-xs shrink-0">
-        <div className={`p-2 rounded ${cell}`}>
-          <span className={label}><Clock size={9} className="inline mr-1"/>ETA</span>
-          {formatTime(time_remaining)}
+        <div className={`p-2 rounded ${cell} flex flex-col justify-between`}>
+          <div className="flex items-center justify-between">
+            <span className={label}><Clock size={9} className="inline mr-1"/>ETA</span>
+            <button
+              onClick={() => {
+                const methods = [ETA_METHODS.WEIGHTED, ETA_METHODS.FILE, ETA_METHODS.FILAMENT, ETA_METHODS.SLICER, ETA_METHODS.M73];
+                const next = methods[(methods.indexOf(etaMethod) + 1) % methods.length];
+                setUiPref("etaMethod", next);
+              }}
+              className="text-[8px] uppercase tracking-wider px-1 py-0.5 rounded bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 font-bold"
+              title={`ETA method: ${etaMethod} (click to cycle)`}
+            >
+              {etaResult.methodUsed || etaMethod}
+            </button>
+          </div>
+          <div className="font-bold text-xs truncate">
+            {formatEtaDisplay(activeRemainingSeconds, formatTime)}
+          </div>
         </div>
-        <div className={`p-2 rounded ${cell}`}>
-          <span className={label}>Layer Z</span>
-          {(z ?? 0).toFixed(2)} mm
+
+        <div className={`p-2 rounded ${cell} flex flex-col justify-between`}>
+          <div className="flex items-center justify-between">
+            <span className={label}>Layer Z</span>
+            {currentLayer && totalLayers > 0 && (
+              <span className="text-[8px] opacity-60 font-mono">
+                L{currentLayer}/{totalLayers}
+              </span>
+            )}
+          </div>
+          <div className="font-bold text-xs truncate">
+            {(z ?? 0).toFixed(2)} mm
+          </div>
         </div>
 
         {/* Speed Override */}
