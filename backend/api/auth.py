@@ -54,10 +54,28 @@ def get_or_create_secret_key() -> str:
 
 
 # ── Auth check ───────────────────────────────────────────────────────────────
+def _check_ldap_credentials(username: str, password: str) -> bool:
+    server = os.getenv("INDUS3D_LDAP_SERVER") or getattr(settings, "LDAP_SERVER", None)
+    if not server or not username or not password:
+        return False
+    try:
+        import ldap3
+        base_dn = os.getenv("INDUS3D_LDAP_BASE_DN", "dc=example,dc=com")
+        user_dn = f"uid={username},{base_dn}"
+        s = ldap3.Server(server, get_info=ldap3.ALL)
+        conn = ldap3.Connection(s, user=user_dn, password=password)
+        return bool(conn.bind())
+    except Exception as e:
+        logging.warning(f"LDAP auth failed for {username}: {e}")
+        return False
+
+
 def auth_required() -> bool:
-    return bool(settings.INDUS3D_PASSWORD)
+    return bool(settings.INDUS3D_PASSWORD or os.getenv("INDUS3D_LDAP_SERVER") or getattr(settings, "LDAP_SERVER", None))
 
 def _check_password(candidate: str) -> bool:
+    if not settings.INDUS3D_PASSWORD:
+        return False
     return hmac.compare_digest(
         candidate.encode("utf-8"),
         settings.INDUS3D_PASSWORD.encode("utf-8"),
@@ -80,12 +98,18 @@ def login():
 
     data = request.get_json(force=True, silent=True) or {}
     password = data.get("password", "")
+    username = data.get("username", "")
 
-    if _check_password(password):
+    if username and _check_ldap_credentials(username, password):
         session["authenticated"] = True
-        return jsonify({"status": "ok"}), 200
+        session["username"] = username
+        return jsonify({"status": "ok", "user": username, "auth_type": "ldap"}), 200
 
-    return jsonify({"error": "Invalid password"}), 401
+    if settings.INDUS3D_PASSWORD and _check_password(password):
+        session["authenticated"] = True
+        return jsonify({"status": "ok", "auth_type": "local"}), 200
+
+    return jsonify({"error": "Invalid credentials"}), 401
 
 
 @auth_bp.route("/api/v1/auth/logout", methods=["POST"])

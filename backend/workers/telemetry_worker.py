@@ -139,7 +139,11 @@ class TelemetryWorker:
                         "htu21d ",
                         "lm75 ",
                         "heater_generic ",
-                    ))
+                        "mmu",
+                        "afc",
+                        "beacon",
+                        "cartographer",
+                    )) or obj.startswith("extruder")
                 ]
                 if sensors:
                     self._extra_temp_sensors = sensors
@@ -886,6 +890,15 @@ class TelemetryWorker:
                 "flow_factor":     flow_factor,
                 "fan_speed":       round(fan.get("speed", 0.0) * 100, 1),
             }
+
+            if "mmu" in data:
+                update["mmu"] = data["mmu"]
+            if "afc" in data:
+                update["afc"] = data["afc"]
+            if "beacon" in data:
+                update["beacon"] = data["beacon"]
+            if "cartographer" in data:
+                update["cartographer"] = data["cartographer"]
 
             # --- Maintenance Tracking ---
             if self._last_pos:

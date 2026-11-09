@@ -102,3 +102,27 @@ def test_auth_keeps_login_shell_public_but_gates_api(monkeypatch):
 
     assert test_client.get("/").status_code == 200
     assert test_client.get("/api/v1/printer/status").status_code == 401
+
+
+def test_ldap_auth_flow(monkeypatch):
+    """Test LDAP authentication integration when LDAP server is configured."""
+    from api.auth import auth_bp
+    monkeypatch.setenv("INDUS3D_LDAP_SERVER", "ldap://127.0.0.1:389")
+    monkeypatch.setattr("api.auth._check_ldap_credentials", lambda u, p: u == "operator" and p == "secret123")
+
+    app = Flask(__name__)
+    app.secret_key = "test-secret"
+    app.register_blueprint(auth_bp)
+    client = app.test_client()
+
+    # Invalid credentials
+    resp = client.post("/api/v1/auth/login", json={"username": "operator", "password": "wrong"})
+    assert resp.status_code == 401
+
+    # Valid LDAP credentials
+    resp = client.post("/api/v1/auth/login", json={"username": "operator", "password": "secret123"})
+    assert resp.status_code == 200
+    assert resp.json["status"] == "ok"
+    assert resp.json["auth_type"] == "ldap"
+    assert resp.json["user"] == "operator"
+

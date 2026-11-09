@@ -1,6 +1,6 @@
 
 import React, { createElement, useState, useEffect, useMemo } from "react";
-import { X, Info, Bell, BellOff, MessageCircle, Send, LogOut, Layout, Server, Camera, Monitor, Thermometer, ShieldCheck, ChevronRight, Activity, Trash2, Edit3, Plus, Sliders, TerminalSquare, RefreshCw, Snowflake, FileEdit, Film, Network, Check, Download, Upload, User, PlaySquare, Eye, EyeOff, ArrowUp, ArrowDown, Lightbulb, ScanEye, WifiOff, Wifi, Layers, Box, Crosshair, FileCode } from "lucide-react";
+import { X, Info, Bell, BellOff, MessageCircle, Send, LogOut, Layout, Server, Camera, Monitor, Thermometer, ShieldCheck, ChevronRight, Activity, Trash2, Edit3, Plus, Sliders, TerminalSquare, RefreshCw, Snowflake, FileEdit, Film, Network, Check, Download, Upload, User, PlaySquare, Eye, EyeOff, ArrowUp, ArrowDown, Lightbulb, ScanEye, WifiOff, Wifi, Layers, Box, Crosshair, FileCode, Radio } from "lucide-react";
 import { useStore, API } from "./store";
 import { useThemeTokens, useIsBrutalist } from "./theme";
 import { ThemeSwitcher } from "./ThemeSwitcher";
@@ -67,7 +67,7 @@ export function SettingsModal({ onClose, onOpenSystem }) {
   const tabLabels = {
     general: "General", ui: "Interface", machine: "Machine", bed: "Print Bed", control: "Control", console: "Console",
     editor: "Editor", timelapse: "Timelapse", webcams: "Webcams", presets: "Presets", macros: "Macros",
-    leds: "LEDs", vision: "Vision Inspector", printers: "Printers", notifications: "Notifications", about: "About",
+    leds: "LEDs", vision: "Vision Inspector", printers: "Printers", notifications: "Notifications", ecosystem: "Ecosystem & Remotes", about: "About",
   };
 
   return (
@@ -96,6 +96,7 @@ export function SettingsModal({ onClose, onOpenSystem }) {
           <TabButton id="leds" icon={Lightbulb} label="LEDs" activeTab={activeTab} setActiveTab={setActiveTab} t={t} brutalist={brutalist} />
           <TabButton id="vision" icon={ScanEye} label="Vision Inspector" activeTab={activeTab} setActiveTab={setActiveTab} t={t} brutalist={brutalist} />
           <TabButton id="notifications" icon={Bell} label="Notifications" activeTab={activeTab} setActiveTab={setActiveTab} t={t} brutalist={brutalist} />
+          <TabButton id="ecosystem" icon={Radio} label="Ecosystem" activeTab={activeTab} setActiveTab={setActiveTab} t={t} brutalist={brutalist} />
           <TabButton id="about" icon={Info} label="About" activeTab={activeTab} setActiveTab={setActiveTab} t={t} brutalist={brutalist} />
 
 
@@ -418,6 +419,10 @@ export function SettingsModal({ onClose, onOpenSystem }) {
                   </div>
                 </div>
               </div>
+            )}
+
+            {activeTab === "ecosystem" && (
+              <EcosystemTab borderClass={borderClass} brutalist={brutalist} t={t} />
             )}
 
             {activeTab === "about" && (
@@ -1560,6 +1565,125 @@ function PresetsTab({ borderClass, brutalist, t, uiPrefs }) {
         >
           <Snowflake size={14} /> {busyId === "__cooldown__" ? "Applying…" : "Cooldown Now"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+function EcosystemTab({ borderClass, brutalist, t }) {
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [obicoEnabled, setObicoEnabled] = useState(false);
+  const [octoEnabled, setOctoEnabled] = useState(false);
+  const uiPrefs = useStore((s) => s.uiPrefs);
+  const setUiPref = useStore((s) => s.setUiPref);
+
+  const handleSyncToMoonraker = async () => {
+    setSyncLoading(true);
+    try {
+      const res = await fetch(`${API}/api/v1/settings/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: uiPrefs }),
+      });
+      const data = await res.json();
+      setSyncStatus(`Synced to ${data.source} at ${new Date().toLocaleTimeString()}`);
+    } catch (err) {
+      setSyncStatus(`Sync failed: ${err.message}`);
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
+  const handlePullFromMoonraker = async () => {
+    setSyncLoading(true);
+    try {
+      const res = await fetch(`${API}/api/v1/settings/sync`);
+      const data = await res.json();
+      if (data.settings && typeof data.settings === "object") {
+        Object.entries(data.settings).forEach(([k, v]) => setUiPref(k, v));
+        setSyncStatus(`Pulled ${Object.keys(data.settings).length} preferences from ${data.source}`);
+      }
+    } catch (err) {
+      setSyncStatus(`Pull failed: ${err.message}`);
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-6 max-w-lg text-xs">
+      <div>
+        <h4 className={`mb-2 font-bold uppercase tracking-wider ${t.label}`}>Moonraker Database Settings Sync</h4>
+        <p className="opacity-60 mb-3">
+          Synchronize UI layout, custom themes, and preferences across devices via Moonraker's internal database (namespace: <code>indus3d</code>).
+        </p>
+        <div className={`p-4 flex flex-col gap-3 ${borderClass} ${!brutalist && "rounded-lg bg-gray-500/5"}`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="font-bold">Sync Engine</div>
+              <div className="text-[11px] opacity-50">Cross-client preferences synchronization</div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handlePullFromMoonraker}
+                disabled={syncLoading}
+                className={`px-3 py-1.5 rounded font-bold border transition-colors ${borderClass} ${brutalist ? "bg-white" : "bg-white/10 hover:bg-white/20"}`}
+              >
+                Pull
+              </button>
+              <button
+                onClick={handleSyncToMoonraker}
+                disabled={syncLoading}
+                className="px-3 py-1.5 rounded font-bold transition-colors bg-blue-600 hover:bg-blue-500 text-white"
+              >
+                {syncLoading ? "Syncing..." : "Sync Now"}
+              </button>
+            </div>
+          </div>
+          {syncStatus && (
+            <div className="text-[11px] font-mono text-emerald-400 opacity-90">{syncStatus}</div>
+          )}
+        </div>
+      </div>
+
+      <div>
+        <h4 className={`mb-2 font-bold uppercase tracking-wider ${t.label}`}>Remote Access & AI Services</h4>
+        <div className="flex flex-col gap-2">
+          {/* Obico */}
+          <div className={`p-4 flex items-center justify-between ${borderClass} ${!brutalist && "rounded-lg bg-gray-500/5"}`}>
+            <div>
+              <div className="font-bold flex items-center gap-2">
+                <span>Obico</span>
+                <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-mono">Community</span>
+              </div>
+              <div className="text-[11px] opacity-50">AI print failure detection and mobile remote control tunnel.</div>
+            </div>
+            <ToggleSwitch
+              checked={obicoEnabled}
+              onChange={() => setObicoEnabled(!obicoEnabled)}
+              label="Obico remote integration"
+              t={t}
+            />
+          </div>
+
+          {/* OctoEverywhere */}
+          <div className={`p-4 flex items-center justify-between ${borderClass} ${!brutalist && "rounded-lg bg-gray-500/5"}`}>
+            <div>
+              <div className="font-bold flex items-center gap-2">
+                <span>OctoEverywhere</span>
+                <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 font-mono">Cloud</span>
+              </div>
+              <div className="text-[11px] opacity-50">Free unlimited private remote access & notifications.</div>
+            </div>
+            <ToggleSwitch
+              checked={octoEnabled}
+              onChange={() => setOctoEnabled(!octoEnabled)}
+              label="OctoEverywhere integration"
+              t={t}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );

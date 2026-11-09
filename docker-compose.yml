@@ -1,0 +1,23 @@
+services:
+  indus3d:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: indus3d:latest
+    container_name: indus3d
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      - PORT=5001
+      - MOONRAKER_HOST=host.docker.internal
+      - MOONRAKER_PORT=7125
+      - INDUS3D_ENV=production
+    volumes:
+      - indus3d_data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  indus3d_data:
+    driver: local
