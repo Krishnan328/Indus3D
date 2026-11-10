@@ -1389,8 +1389,8 @@ class Indus3DSensorDaemon:
         http_thread = threading.Thread(target=self.start_http_server, daemon=True)
         http_thread.start()
 
-        # Start Terminal Status Monitor if enabled
-        if self.monitor:
+        # Start Terminal Status Monitor if enabled and connected to an interactive TTY
+        if self.monitor and sys.stdout.isatty():
             mon_thread = threading.Thread(target=self.monitor_loop, daemon=True)
             mon_thread.start()
 
@@ -1402,7 +1402,7 @@ class Indus3DSensorDaemon:
         finally:
             self.running = False
             self.save_state()
-            if self.monitor:
+            if self.monitor and sys.stdout.isatty():
                 print("\n")
 
 

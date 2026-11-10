@@ -13,10 +13,21 @@ _BACKEND = Path(__file__).resolve().parent.parent
 
 
 def data_dir(sub: str = "") -> Path:
-    """Writable directory for plugin output (INDUS3D_PLUGIN_DATA, default backend/data/plugins)."""
-    root = Path(os.environ.get("INDUS3D_PLUGIN_DATA", str(_BACKEND / "data" / "plugins")))
+    """Writable directory for plugin output (INDUS3D_PLUGIN_DATA, default /var/lib/indus3d/data/plugins or backend/data/plugins)."""
+    env_dir = os.environ.get("INDUS3D_PLUGIN_DATA")
+    if env_dir:
+        root = Path(env_dir)
+    elif Path("/var/lib/indus3d").exists():
+        root = Path("/var/lib/indus3d/data/plugins")
+    else:
+        root = _BACKEND / "data" / "plugins"
     d = root / sub if sub else root
-    d.mkdir(parents=True, exist_ok=True)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        root = Path("/tmp/indus3d/data/plugins")
+        d = root / sub if sub else root
+        d.mkdir(parents=True, exist_ok=True)
     return d
 
 
