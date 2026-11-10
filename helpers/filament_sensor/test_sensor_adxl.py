@@ -22,7 +22,10 @@ import math
 import struct
 import glob
 import select
-import serial
+try:
+    import serial
+except ImportError:
+    serial = None
 import shutil
 
 MAGNET_STATES = {

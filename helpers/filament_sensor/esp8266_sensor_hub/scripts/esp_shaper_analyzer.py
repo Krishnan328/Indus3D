@@ -41,7 +41,10 @@ import urllib.request
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import scipy.signal
+try:
+    import scipy.signal
+except ImportError:
+    scipy = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hub_protocol as hp  # noqa: E402

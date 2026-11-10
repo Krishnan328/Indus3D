@@ -313,10 +313,27 @@ def test_probe_is_passive_it_never_writes_to_an_unknown_device(hub):
 
 
 def test_candidate_ports_never_include_klipper_mcus(monkeypatch):
-    monkeypatch.setattr(dm.glob, "glob", lambda pat: ["/dev/serial/by-id/usb-Klipper_stm32g0b1xx-if00",
-                                                      "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"]
-                        if "by-id" in pat else [])
-    assert dm.candidate_ports() == ["/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"]
+    # Mock glob to return a Klipper toolhead MCU, a CH340 mainboard MCU, and an ESP8266 device
+    monkeypatch.setattr(dm.glob, "glob", lambda pat: [
+        "/dev/serial/by-id/usb-Klipper_stm32g0b1xx-if00",
+        "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+        "/dev/serial/by-id/usb-Silicon_Labs_CP2102_ESP8266_Hub-if00"
+    ] if "by-id" in pat else [
+        "/dev/serial/by-path/platform-fd500000.pcie-pci-0000:01:00.0-usb-0:1.3:1.0-port0"
+    ])
+    # Mock realpaths: Klipper toolhead and its by-path point to /dev/ttyACM0, mainboard points to /dev/ttyUSB0, ESP points to /dev/ttyUSB1
+    def mock_realpath(path):
+        if "stm32" in path or "1.3:1.0" in path:
+            return "/dev/ttyACM0"
+        if "1a86" in path:
+            return "/dev/ttyUSB0"
+        if "ESP8266" in path:
+            return "/dev/ttyUSB1"
+        return path
+
+    monkeypatch.setattr(dm.os.path, "realpath", mock_realpath)
+    # The Klipper MCU, mainboard CH340, and by-path link to Klipper must all be excluded
+    assert dm.candidate_ports() == ["/dev/serial/by-id/usb-Silicon_Labs_CP2102_ESP8266_Hub-if00"]
 
 
 # ── HTTP API ──────────────────────────────────────────────────────────────────

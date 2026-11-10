@@ -37,7 +37,10 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.request
 import urllib.error
-import serial
+try:
+    import serial
+except ImportError:
+    serial = None
 
 # Default Material Densities (g/cm³)
 MATERIAL_DENSITIES = {
@@ -952,10 +955,46 @@ class Indus3DSensorDaemon:
         if self.configured_port and os.path.exists(self.configured_port):
             return self.configured_port
 
-        # Auto-detect Raspberry Pi Pico serial devices (strictly exclude Klipper MCUs)
+        # Auto-detect Raspberry Pi Pico serial devices (strictly exclude Klipper MCUs and mainboards)
+        excluded = set()
+        for p in glob.glob("/dev/serial/by-id/*"):
+            if "Klipper" in p or any(k in p for k in ("A5069RR4", "usb-0:2.2:1.0", "1a86_USB_Serial")):
+                excluded.add(p)
+                try:
+                    excluded.add(os.path.realpath(p))
+                except OSError:
+                    pass
+
+        # Exclude any serial port configured in Klipper's printer.cfg
+        for cfg in (
+            Path("/var/lib/moonraker/config/printer.cfg"),
+            Path.home() / "printer_data/config/printer.cfg",
+            Path.home() / "klipper_config/printer.cfg",
+            Path("/etc/klipper/printer.cfg"),
+        ):
+            if cfg.is_file():
+                try:
+                    curr_sec = ""
+                    for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+                        m_sec = re.match(r"^\s*\[([^]]+)\]", line)
+                        if m_sec:
+                            curr_sec = m_sec.group(1).strip()
+                            continue
+                        if curr_sec == "mcu" or curr_sec.startswith("mcu "):
+                            m_ser = re.match(r"^\s*serial\s*:\s*(\S+)", line)
+                            if m_ser:
+                                ser_path = m_ser.group(1)
+                                excluded.add(ser_path)
+                                try:
+                                    excluded.add(os.path.realpath(ser_path))
+                                except OSError:
+                                    pass
+                except OSError:
+                    pass
+
         by_id_candidates = [
             p for p in (glob.glob('/dev/serial/by-id/*Raspberry_Pi*') + glob.glob('/dev/serial/by-id/*Pico*'))
-            if 'Klipper' not in p
+            if 'Klipper' not in p and p not in excluded and os.path.realpath(p) not in excluded
         ]
         if by_id_candidates:
             return by_id_candidates[0]

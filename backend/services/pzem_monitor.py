@@ -138,16 +138,23 @@ def find_pzem_port() -> str:
     if configured and (os.path.exists(configured) or os.path.islink(configured)):
         return configured
 
-    # Auto-discovery fallback for FTDI FT232 UART adapters
+    # Auto-discovery fallback for FTDI FT232 UART adapters (strictly excluding Klipper MCUs)
     patterns = [
         "/dev/serial/by-id/*FT232*",
         "/dev/serial/by-id/*FTDI*",
         "/dev/serial/by-id/usb-FTDI*",
     ]
     for pattern in patterns:
-        matches = glob.glob(pattern)
-        if matches:
-            return matches[0]
+        for match in glob.glob(pattern):
+            if "Klipper" in match:
+                continue
+            try:
+                real = os.path.realpath(match)
+                if "Klipper" in real:
+                    continue
+                return match
+            except OSError:
+                return match
 
     return configured
 

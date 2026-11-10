@@ -15,7 +15,10 @@ Author: Krishnan H (Indus3D Project)
 import unittest
 import struct
 import numpy as np
-import scipy.signal
+try:
+    import scipy.signal
+except ImportError:
+    scipy = None
 import os
 import sys
 
@@ -99,6 +102,7 @@ class TestSensorHubMath(unittest.TestCase):
             # Notch should attenuate target resonance by at least 95% (|H(f0)| <= 0.05)
             self.assertLess(H[0], 0.06, msg=f"Shaper {st} failed to attenuate resonance at {f_target} Hz")
 
+    @unittest.skipIf(scipy is None, "scipy is required for resonance analysis")
     def test_psd_peak_detection(self):
         """Verify Welch PSD detects known resonance peak accurately."""
         fs = 1600.0 # 1600 Hz
@@ -141,6 +145,7 @@ def _resonance(fs, dur, f0, zeta, seed=1, axis=2):
     return np.column_stack([t] + cols)
 
 
+@unittest.skipIf(scipy is None, "scipy is required for resonance analysis")
 class TestShaperPhysics(unittest.TestCase):
     def test_all_shapers_notch_at_design_frequency(self):
         for st in ["ZV", "MZV", "ZVD", "EI", "2HUMP_EI", "3HUMP_EI"]:
@@ -216,6 +221,7 @@ serial: /dev/x
 """
 
 
+@unittest.skipIf(scipy is None, "scipy is required for resonance analysis")
 class TestPrinterCfgUpdate(unittest.TestCase):
     def test_updates_only_the_axis_keys(self):
         new, w = update_printer_cfg_text(CFG, "Y", "mzv", 42.6)
