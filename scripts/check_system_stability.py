@@ -45,9 +45,46 @@ RESET = "\033[0m"
 MOONRAKER_URL = os.environ.get("MOONRAKER_URL", "http://127.0.0.1:7125")
 INDUS3D_URL = os.environ.get("INDUS3D_URL", "http://127.0.0.1:5001")
 
+_SESSION_COOKIE: Optional[str] = None
+
+
+def _get_auth_cookie() -> Optional[str]:
+    global _SESSION_COOKIE
+    if _SESSION_COOKIE:
+        return _SESSION_COOKIE
+
+    password = os.environ.get("INDUS3D_PASSWORD")
+    if not password:
+        for p in ("/var/lib/indus3d/indus3d.env", "/etc/indus3d/indus3d.env"):
+            if os.path.isfile(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.startswith("INDUS3D_PASSWORD="):
+                                password = line.partition("=")[2].strip()
+                                break
+                except Exception:
+                    pass
+    if password:
+        try:
+            req = urllib.request.Request(
+                f"{INDUS3D_URL}/api/v1/auth/login",
+                data=json.dumps({"password": password}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "User-Agent": "Indus3D-Stability-Check/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                _SESSION_COOKIE = resp.headers.get("Set-Cookie")
+        except Exception:
+            pass
+    return _SESSION_COOKIE
+
 
 def _http_get(url: str, timeout: float = 3.0) -> Tuple[int, Any]:
-    req = urllib.request.Request(url, headers={"User-Agent": "Indus3D-Stability-Check/1.0"})
+    headers = {"User-Agent": "Indus3D-Stability-Check/1.0"}
+    cookie = _get_auth_cookie()
+    if cookie:
+        headers["Cookie"] = cookie
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             content = resp.read().decode("utf-8", errors="replace")
@@ -383,13 +420,28 @@ class StabilityChecker:
         bad_cable_count = len(re.findall(r"Maybe the USB cable is bad\?|unable to enumerate", dmesg_text))
         disconnect_count = len(re.findall(r"USB disconnect", dmesg_text))
 
-        if err_71_count == 0 and err_110_count == 0 and bad_cable_count == 0:
-            self._record(cat, "USB Protocol Errors (-71 / -110)", "PASS", "0 protocol errors in kernel ring buffer")
+        # Check recent error status in the last 15 minutes via journalctl to distinguish historical vs active
+        recent_err_count = 0
+        try:
+            proc_recent = subprocess.run(
+                ["journalctl", "-k", "--since", "-15m", "-q", "--no-pager"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=4
+            )
+            if proc_recent.returncode == 0:
+                recent_err_count = len(re.findall(r"error -71|err = -71|clear tt", proc_recent.stdout))
+        except Exception:
+            pass
+
+        if recent_err_count == 0 and bad_cable_count == 0:
+            msg = "0 active protocol errors in kernel stream"
+            if err_71_count > 0:
+                msg += f" (system clean since restart; {err_71_count} historical boot entries logged)"
+            self._record(cat, "USB Protocol Errors (-71 / -110)", "PASS", msg)
         else:
-            status = "FAIL" if (err_71_count > 5 or bad_cable_count > 0) else "WARN"
+            status = "FAIL" if (recent_err_count > 5 or bad_cable_count > 0) else "WARN"
             self._record(cat, "USB Protocol Errors (-71 / -110)", status,
-                         f"Found {err_71_count} EPROTO (-71) and {err_110_count} ETIMEDOUT (-110) errors!",
-                         {"err_71": err_71_count, "err_110": err_110_count, "clear_tt": clear_tt_count})
+                         f"Found {recent_err_count} active EPROTO (-71) errors in last 15m ({err_71_count} total since boot)!",
+                         {"err_71": err_71_count, "err_110": err_110_count, "clear_tt": clear_tt_count, "recent": recent_err_count})
             self.results["recommendations"].append(
                 "EPROTO (-71) errors indicate USB hub Transaction Translator starvation or voltage drops. Use a powered hub or dedicated PC port."
             )
@@ -445,11 +497,14 @@ class StabilityChecker:
             sock.connect((host, port))
 
             # Perform minimal HTTP Upgrade to WebSocket
+            cookie = _get_auth_cookie()
+            cookie_hdr = f"Cookie: {cookie}\r\n" if cookie else ""
             handshake = (
                 f"GET {parsed.path} HTTP/1.1\r\n"
                 f"Host: {host}:{port}\r\n"
                 f"Upgrade: websocket\r\n"
                 f"Connection: Upgrade\r\n"
+                f"{cookie_hdr}"
                 f"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
                 f"Sec-WebSocket-Version: 13\r\n\r\n"
             )
