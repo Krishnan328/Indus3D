@@ -42,7 +42,7 @@ import urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Set
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hub_protocol as hp  # noqa: E402
@@ -78,14 +78,115 @@ def open_serial(port: str, baud: int):
     return s
 
 
-def candidate_ports() -> List[str]:
-    """Serial devices that could be the hub, excluding Klipper MCUs (never touched)."""
+# Known 3D printer mainboard, FTDI, and physical controller USB port signatures to strictly exclude
+KNOWN_MCU_EXCLUDES = (
+    "A5069RR4",
+    "usb-0:2.2:1.0",
+    "usb-1a86_USB_Serial-if00-port0",
+    "usb-1a86_USB_Serial",
+    "1a86_USB_Serial",
+)
+
+
+def get_klipper_excluded_ports() -> Set[str]:
+    """Return all serial paths and realpaths associated with Klipper MCUs or mainboard controllers."""
+    excluded: Set[str] = set()
+
+    # 1. Add all Klipper by-id devices and their realpaths
+    for p in glob.glob("/dev/serial/by-id/*"):
+        if "Klipper" in p or any(k in p for k in KNOWN_MCU_EXCLUDES):
+            excluded.add(p)
+            try:
+                excluded.add(os.path.realpath(p))
+            except OSError:
+                pass
+
+    # 2. Add all Klipper by-path devices that match known physical ports
+    for p in glob.glob("/dev/serial/by-path/*"):
+        if any(k in p for k in KNOWN_MCU_EXCLUDES):
+            excluded.add(p)
+            try:
+                excluded.add(os.path.realpath(p))
+            except OSError:
+                pass
+
+    # 3. Parse Klipper printer.cfg locations
+    config_paths = [
+        Path("/var/lib/moonraker/config/printer.cfg"),
+        Path.home() / "printer_data/config/printer.cfg",
+        Path.home() / "klipper_config/printer.cfg",
+        Path("/etc/klipper/printer.cfg"),
+    ]
+    for cfg in config_paths:
+        if cfg.is_file():
+            try:
+                current_section = ""
+                for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+                    m_sec = re.match(r"^\s*\[([^]]+)\]", line)
+                    if m_sec:
+                        current_section = m_sec.group(1).strip()
+                        continue
+                    if current_section == "mcu" or current_section.startswith("mcu "):
+                        m_ser = re.match(r"^\s*serial\s*:\s*(\S+)", line)
+                        if m_ser:
+                            ser_path = m_ser.group(1)
+                            excluded.add(ser_path)
+                            try:
+                                excluded.add(os.path.realpath(ser_path))
+                            except OSError:
+                                pass
+            except OSError:
+                pass
+
+    # 4. Check active Klipper / Moonraker processes via /proc if accessible
+    try:
+        for proc_dir in glob.glob("/proc/[0-9]*/"):
+            try:
+                cmdline_file = os.path.join(proc_dir, "cmdline")
+                if os.path.isfile(cmdline_file):
+                    with open(cmdline_file, "rb") as f:
+                        cmdline = f.read().decode("utf-8", errors="replace")
+                    if "klippy" in cmdline or "klipper" in cmdline:
+                        fd_dir = os.path.join(proc_dir, "fd")
+                        if os.path.isdir(fd_dir):
+                            for fd in os.listdir(fd_dir):
+                                try:
+                                    target = os.path.realpath(os.path.join(fd_dir, fd))
+                                    if target.startswith("/dev/tty"):
+                                        excluded.add(target)
+                                except OSError:
+                                    pass
+            except (OSError, PermissionError):
+                continue
+    except Exception:
+        pass
+
+    return excluded
+
+
+def candidate_ports(excluded_ports: Optional[Set[str]] = None) -> List[str]:
+    """Serial devices that could be the hub, excluding Klipper MCUs and mainboards (never touched)."""
+    excluded = get_klipper_excluded_ports() if excluded_ports is None else excluded_ports
     seen, out = set(), []
     for p in sorted(glob.glob("/dev/serial/by-id/*")) + sorted(glob.glob("/dev/serial/by-path/*")):
-        real = os.path.realpath(p)
-        if "Klipper" in p or real in seen:
+        try:
+            real = os.path.realpath(p)
+        except OSError:
+            continue
+
+        # ALWAYS record in seen so by-path doesn't duplicate or bypass exclusion
+        if real in seen:
             continue
         seen.add(real)
+
+        # Strictly exclude Klipper MCUs, mainboards, and known controller ports
+        if "Klipper" in p or "Klipper" in real:
+            continue
+        if p in excluded or real in excluded:
+            continue
+        if any(k in p or k in real for k in KNOWN_MCU_EXCLUDES):
+            continue
+
         out.append(p)
     return out
 
@@ -96,7 +197,18 @@ def bed_accel_line(line: str) -> bool:
 
 def probe_port(port: str, opener=open_serial, listen_s: float = 2.5, clock=time.time) -> bool:
     """Passive probe: the hub announces itself with a telemetry line every second. Nothing is
-    ever written to an unknown device. A port held by another process (e.g. Klipper) just fails."""
+    ever written to an unknown device. A port held by another process or belonging to a Klipper MCU
+    is NEVER touched."""
+    try:
+        real = os.path.realpath(port)
+    except OSError:
+        real = port
+    if "Klipper" in port or "Klipper" in real or any(k in port or k in real for k in KNOWN_MCU_EXCLUDES):
+        return False
+    excluded = get_klipper_excluded_ports()
+    if port in excluded or real in excluded:
+        return False
+
     try:
         s = opener(port, 115200)
     except Exception:  # noqa: BLE001
@@ -570,14 +682,14 @@ class HubDaemon:
 
     # -- main loop ----------------------------------------------------------------------------------
     def run_forever(self):
-        backoff = 1.0
+        backoff = 2.0
         while self.running:
             if not self.ser:
                 if self._connect():
-                    backoff = 1.0
+                    backoff = 2.0
                 else:
                     self._sleep(backoff)
-                    backoff = min(10.0, backoff * 1.5)
+                    backoff = min(30.0, backoff * 1.5)
                     self._fail_pending_jobs()
                     continue
             self._process_jobs()

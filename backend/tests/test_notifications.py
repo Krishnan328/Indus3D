@@ -112,6 +112,7 @@ def test_caller_returns_immediately_while_a_channel_blocks(isolated, monkeypatch
 
 
 def test_delivery_order_is_preserved(isolated, monkeypatch):
+    isolated.flush(1)
     got = []
     monkeypatch.setattr(n, "_CHANNELS", [lambda m: got.append(m) or "sent"])
     for i in range(4):

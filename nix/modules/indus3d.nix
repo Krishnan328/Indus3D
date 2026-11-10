@@ -114,6 +114,15 @@ in
         '';
       };
 
+      disableUsbAutosuspend = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Disable Linux USB selective autosuspend (usbcore.autosuspend=-1) and configure udev rules
+          to keep 3D printer MCUs, toolhead boards, probes, and sensors powered and awake continuously.
+        '';
+      };
+
       klipperIntegration = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -288,6 +297,15 @@ in
 
     # Open firewall port if requested
     networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ cfg.port ];
+
+    # Prevent Linux USB selective autosuspend from dropping MCU and sensor serial connections
+    boot.kernelParams = lib.mkIf cfg.disableUsbAutosuspend [ "usbcore.autosuspend=-1" ];
+
+    # Keep 3D printer MCUs, toolhead boards, probes, and sensors awake continuously
+    services.udev.extraRules = lib.mkIf cfg.disableUsbAutosuspend (lib.mkAfter ''
+      ACTION=="add", SUBSYSTEM=="usb", ATTR{power/control}="on"
+      ACTION=="add", SUBSYSTEM=="usb", ATTR{power/autosuspend}="-1"
+    '');
 
     systemd.services.indus3d =
       let
