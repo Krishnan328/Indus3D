@@ -5,6 +5,7 @@ All machine constants from config/printer_profile.json.
 Deadband filtering on odometry to prevent floating-point noise accumulation.
 """
 
+import logging
 import math
 import time
 from collections import deque
@@ -54,10 +55,12 @@ class KinematicModel:
         for axis, delta in [("X", cx - self._prev_cmd["x"]),
                              ("Y", cy - self._prev_cmd["y"]),
                              ("Z", cz - self._prev_cmd["z"])]:
+            # Dynamic decay so stress reflects recent mechanical activity (~30s half-life)
+            self._stress_score[axis] = max(0.0, self._stress_score[axis] * max(0.0, 1.0 - 0.02 * dt))
             if self._prev_direction[axis] != 0 and delta != 0:
                 if math.copysign(1, delta) != math.copysign(1, self._prev_direction[axis]):
                     self._reversal_counts[axis] += 1
-                    self._stress_score[axis]    += 0.001
+                    self._stress_score[axis] = min(1.0, self._stress_score[axis] + 0.005)
             if delta != 0:
                 self._prev_direction[axis] = delta
 
@@ -115,10 +118,24 @@ class KinematicModel:
             c.execute("UPDATE odometry SET travel_meters=travel_meters+? WHERE axis='Y'", (dy/1000.0,))
             c.execute("UPDATE odometry SET travel_meters=travel_meters+? WHERE axis='Z'", (dz/1000.0,))
             c.execute("UPDATE odometry SET travel_meters=travel_meters+? WHERE axis='E'", (de/1000.0,))
+
+            # Virtual Spool tracking
+            if de > 0:
+                c.execute("SELECT id, density_g_cm3 FROM spools WHERE is_active = 1 LIMIT 1")
+                spool = c.fetchone()
+                if spool:
+                    spool_id, density = spool
+                    # Area = pi * r^2 (for 1.75mm filament) = 2.40528 mm^2
+                    # Volume = Area * length (mm)
+                    vol_mm3 = 2.40528 * de
+                    # Mass (g) = Vol(mm^3) * Density(g/cm^3) / 1000
+                    mass_g = vol_mm3 * (density / 1000.0)
+                    c.execute("UPDATE spools SET used_weight_g = used_weight_g + ? WHERE id = ?", (mass_g, spool_id))
+
             conn.commit()
             conn.close()
         except Exception as e:
-            print(f"⚠️  Odometry DB: {e}")
+            logging.info(f"⚠️  Odometry DB: {e}")
 
     def get_lifetime_odometry(self) -> dict:
         try:

@@ -1,0 +1,110 @@
+name: Indus3D CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04  # setup-python has no Python 3.9 build for the newer ubuntu-latest image
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.9"
+        
+    - name: Install dependencies
+      working-directory: ./backend
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install flake8 bandit pytest
+        
+    - name: Lint with flake8
+      working-directory: ./backend
+      run: |
+        # stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        
+    - name: Security Scan (Bandit)
+      working-directory: ./backend
+      run: |
+        bandit -r . -x ./.venv,./myenv,./tests -c bandit.yaml || true
+        
+    - name: Run Pytest (Safety-Critical Suite)
+      working-directory: ./backend
+      run: |
+        python -m pytest tests/
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Node.js 22
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+        
+    - name: Install dependencies
+      working-directory: ./frontend
+      run: npm ci
+      
+    - name: Security Scan (npm audit)
+      working-directory: ./frontend
+      run: npm audit --audit-level=high || true
+      
+    - name: Build React App (Zero-Compile Artifact Check)
+      working-directory: ./frontend
+      run: npm run build
+
+  lab:
+    runs-on: ubuntu-24.04  # setup-python has no Python 3.9 build for the newer ubuntu-latest image
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.9"
+    - name: Install lab and backend test dependencies
+      working-directory: ./backend
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt pytest
+    - name: Run Printer Lab and guarded-calibration tests
+      run: |
+        python -m pytest backend/tests/test_lab_routes.py backend/tests/test_calibration_workflow.py
+        python tools/indus3d_lab/tests/test_calibration_library.py
+
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: cachix/install-nix-action@v31
+    - name: Evaluate and build the reproducible Nix release
+      run: nix flake check --print-build-logs
+
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+    - name: Load the tested upstream KIAUH contract
+      uses: actions/checkout@v4
+      with:
+        repository: dw-0/kiauh
+        ref: 485b7bc7bf7627cc528245b6a2a0856e0c1a05f8
+        path: upstream-kiauh
+    - name: Check installer syntax and packaging contracts
+      env:
+        KIAUH_SOURCE_DIR: ${{ github.workspace }}/upstream-kiauh
+      run: |
+        bash -n install.sh uninstall.sh integrations/kiauh/*.sh
+        python -m unittest discover -s integrations/kiauh/tests -p 'test_*.py'

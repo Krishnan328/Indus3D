@@ -26,6 +26,7 @@ Handles:
     - Non-numeric values (skipped gracefully)
 """
 
+import logging
 import re
 import os
 import configparser
@@ -45,6 +46,13 @@ def _int(val: str, default: int) -> int:
     try:
         return int(float(val.split("#")[0].strip()))
     except (ValueError, AttributeError):
+        return default
+
+
+def _bool(val, default: bool) -> bool:
+    try:
+        return val.split("#")[0].strip().lower() in ("1", "true", "yes", "on")
+    except AttributeError:
         return default
 
 
@@ -103,9 +111,17 @@ def _read_klipper_cfg(cfg_path: str) -> dict:
                 sections[current] = {}
                 continue
 
-            # Key = value
-            if current is not None and "=" in line:
-                key, _, val = line.partition("=")
+            # Key: value or Key = value
+            if current is not None and (":" in line or "=" in line):
+                colon_idx = line.find(":")
+                eq_idx = line.find("=")
+                if colon_idx != -1 and eq_idx != -1:
+                    sep = ":" if colon_idx < eq_idx else "="
+                elif colon_idx != -1:
+                    sep = ":"
+                else:
+                    sep = "="
+                key, _, val = line.partition(sep)
                 key = key.strip().lower()
                 val = val.split("#")[0].strip()   # strip inline comment
                 sections[current][key] = val
@@ -148,27 +164,36 @@ def build_profile(cfg_path: str,
     max_accel   = _float(pr.get("max_accel", "3000"), 3000.0)
 
     # ── Bed size ──────────────────────────────────────────────────────────────
-    # Prefer [bed_mesh] mesh_min / mesh_max
-    bm          = kc.get("bed_mesh", {})
+    # In Klipper, the physical bed limits and toolhead travel volume are defined by
+    # [stepper_x], [stepper_y], and [stepper_z] position_max/min.
+    # [bed_mesh] mesh_min/mesh_max only defines the probing offset region and must
+    # NOT be used as the physical bed dimensions.
     origin_center = kinematics in ("delta", "polar")
 
-    if bm.get("mesh_max") and bm.get("mesh_min"):
-        try:
-            mesh_max = [float(v) for v in bm["mesh_max"].split(",")]
-            mesh_min = [float(v) for v in bm["mesh_min"].split(",")]
-            bed_x    = mesh_max[0] - mesh_min[0]
-            bed_y    = mesh_max[1] - mesh_min[1]
-        except Exception:
-            bed_x, bed_y = 300.0, 300.0
-    else:
-        # Fallback: stepper position_max
-        sx   = kc.get("stepper_x", {})
-        sy   = kc.get("stepper_y", {})
-        bed_x = _float(sx.get("position_max", "300"), 300.0)
-        bed_y = _float(sy.get("position_max", "300"), 300.0)
+    sx   = kc.get("stepper_x", {})
+    sy   = kc.get("stepper_y", {})
+    sz   = kc.get("stepper_z", {})
 
-    sz    = kc.get("stepper_z", {})
-    bed_z = _float(sz.get("position_max", "400"), 400.0)
+    pos_max_x = _float(sx.get("position_max", "0"), 0.0)
+    pos_min_x = _float(sx.get("position_min", "0"), 0.0)
+    pos_max_y = _float(sy.get("position_max", "0"), 0.0)
+    pos_min_y = _float(sy.get("position_min", "0"), 0.0)
+    pos_max_z = _float(sz.get("position_max", "0"), 0.0)
+
+    if pos_max_x > 0:
+        bed_x = round(pos_max_x - pos_min_x, 1) if pos_max_x > pos_min_x else pos_max_x
+    else:
+        bed_x = 300.0
+
+    if pos_max_y > 0:
+        bed_y = round(pos_max_y - pos_min_y, 1) if pos_max_y > pos_min_y else pos_max_y
+    else:
+        bed_y = 300.0
+
+    if pos_max_z > 0:
+        bed_z = pos_max_z
+    else:
+        bed_z = 400.0
 
     # ── Stepper steps/mm ──────────────────────────────────────────────────────
     sx_r = kc.get("stepper_x", {})
@@ -210,8 +235,12 @@ def build_profile(cfg_path: str,
     printer_name = pr.get("name", "Klipper Printer").strip('"').strip("'")
 
     # ── Overrides ─────────────────────────────────────────────────────────────
-    mr_ip   = ov.get("moonraker_ip",   "100.88.38.105")
-    mr_port = _int(ov.get("moonraker_port", "7125"), 7125)
+    # Moonraker address comes from config/settings.py (.env) — the single
+    # source of truth — not from indus_overrides.cfg. This field is purely
+    # informational (shown in /api/profile and the debug summary); nothing
+    # routes requests off of it.
+    from config.settings import settings
+    mr_ip, mr_port = settings.MOONRAKER_HOST, settings.MOONRAKER_PORT
 
     profile = {
         "printer_name": printer_name,
@@ -269,6 +298,39 @@ def build_profile(cfg_path: str,
             "thermal_runaway_delta_c":  _float(ov.get("thermal_runaway_delta_c",  "15.0"), 15.0),
             "thermal_runaway_window_s": _float(ov.get("thermal_runaway_window_s", "5.0"),  5.0),
         },
+
+        "power": {
+            # Opt-in only — disabled unless explicitly turned on in
+            # indus_overrides.cfg. See docs/DEVELOPMENT.md before enabling:
+            # the target [power <device>] in moonraker.conf must NOT set
+            # locked_while_printing=True, or Moonraker will refuse the
+            # cutoff during the exact situation it exists for.
+            "cutoff_enabled": _bool(ov.get("power_cutoff_enabled", "false"), False),
+            "cutoff_device":  ov.get("power_cutoff_device", "").strip(),
+        },
+
+        "timelapse": {
+            "enabled":     _bool(ov.get("timelapse_enabled", "false"), False),
+            # "interval": snapshot every N seconds while printing — works
+            #   with any slicer, no gcode macros needed.
+            # "layer": snapshot on each Z increase >= layer_height_mm, using
+            #   Indus3D's own live Z tracking rather than slicer layer-change
+            #   macros — no gcode preprocessing required either way.
+            "mode":        (ov.get("timelapse_mode", "interval") or "interval").strip(),
+            "interval_s":  _float(ov.get("timelapse_interval_s", "10"), 10.0),
+            "fps":         _int(ov.get("timelapse_fps", "15"), 15),
+        },
+
+        "edge_inspection": {
+            # Opt-in vision-based failure detection — see backend/edge/ and
+            # docs/DEVELOPMENT.md. Disabled by default: this expects a
+            # separate companion device (not this Pi/mainboard) running
+            # edge/inspector.py or edge/watchdog.py and POSTing detections
+            # to /api/v1/edge/inspection-alert.
+            "enabled":       _bool(ov.get("edge_inspection_enabled", "false"), False),
+            "threshold_pct": _float(ov.get("edge_inspection_threshold_pct", "70"), 70.0),
+            "cooldown_s":    _float(ov.get("edge_inspection_cooldown_s", "120"), 120.0),
+        },
     }
 
     return profile
@@ -303,6 +365,6 @@ if __name__ == "__main__":
     cfg_path      = sys.argv[1] if len(sys.argv) > 1 else "printer.cfg"
     override_path = sys.argv[2] if len(sys.argv) > 2 else "indus_overrides.cfg"
     p = build_profile(cfg_path, override_path)
-    print(profile_summary(p))
+    logging.info(profile_summary(p))
     import json
-    print(json.dumps(p, indent=2))
+    logging.info(json.dumps(p, indent=2))
